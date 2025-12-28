@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Grow - A Single Plant Care Game
 
 A cozy tamagotchi-style plant growing game made with Godot 4.
@@ -57,3 +58,7 @@ grow/
 ## License
 
 MIT License - Feel free to use and modify for your own projects!
+=======
+# Grow
+grow game
+>>>>>>> f6c61a3ad2afbb9ca72edf544262962ef73b2907
