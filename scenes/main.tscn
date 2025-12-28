@@ -1,0 +1,33 @@
+[gd_scene load_steps=3 format=3 uid="uid://c4m8vlh8jfp2r"]
+
+[ext_resource type="Script" path="res://scripts/game.gd" id="1_3r7cd"]
+[ext_resource type="PackedScene" uid="uid://bvqjw0bw5axu7" path="res://scenes/player.tscn" id="2_player"]
+
+[node name="Game" type="Node2D"]
+script = ExtResource("1_3r7cd")
+
+[node name="Player" parent="." instance=ExtResource("2_player")]
+position = Vector2(640, 360)
+
+[node name="UI" type="CanvasLayer" parent="."]
+
+[node name="SeedCount" type="Label" parent="UI"]
+offset_left = 20.0
+offset_top = 20.0
+offset_right = 200.0
+offset_bottom = 60.0
+theme_override_colors/font_color = Color(1, 1, 1, 1)
+theme_override_font_sizes/font_size = 24
+text = "Seeds: 10"
+
+[node name="Instructions" type="Label" parent="UI"]
+offset_left = 20.0
+offset_top = 680.0
+offset_right = 800.0
+offset_bottom = 710.0
+theme_override_colors/font_color = Color(0.8, 0.8, 0.8, 1)
+theme_override_font_sizes/font_size = 16
+text = "WASD/Arrow Keys to move | Space to plant seeds"
+
+[node name="Camera2D" type="Camera2D" parent="."]
+position = Vector2(640, 360)
