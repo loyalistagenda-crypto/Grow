@@ -123,6 +123,15 @@ func set_flower_variant(variant: String) -> void:
 			leaf_count = 12
 			_ensure_rng()
 			_init_rose_bush_plan()
+		"rainbow_rose_bush":
+			# Rainbow blooms on rose bush structure with decorative elements
+			flower_petal_color = Color(1.0, 1.0, 1.0)
+			flower_bud_color = Color(1.0, 1.0, 1.0)
+			flower_mid_color = Color(0.95, 0.95, 0.95)
+			leaf_size = Vector2(18.0, 8.0)
+			leaf_count = 12
+			_ensure_rng()
+			_init_rose_bush_plan()
 		_:
 			# Default to purple
 			variant_name = "purple"
@@ -189,9 +198,11 @@ func _draw() -> void:
 	var stem_col := stem_color.darkened(minf(0.4, float(wilted_leaves) * 0.05))
 	_draw_pot(base)
 	
-	# Rose bush uses a custom branching + bloom style
-	if variant_name == "rose_bush":
+	# Rose bush and rainbow rose bush use custom branching + bloom style
+	if variant_name == "rose_bush" or variant_name == "rainbow_rose_bush":
 		_draw_rose_bush(base)
+		if variant_name == "rainbow_rose_bush":
+			_draw_poops(base)
 		_draw_splash(base)
 		return
 	# Draw main stem
@@ -340,9 +351,41 @@ func _draw_small_bloom(pos: Vector2) -> void:
 	var r1: float = bud_radius * 0.55
 	var r2: float = bud_radius * 0.38
 	var r3: float = bud_radius * 0.22
-	draw_circle(pos, r1, flower_petal_color)
-	draw_circle(pos + Vector2(0.0, -1.0), r2, flower_bud_color)
-	draw_circle(pos + Vector2(0.5, 0.5), r3, flower_mid_color)
+	if variant_name == "rainbow_rose_bush":
+		# Rainbow petals for rainbow rose bush
+		var angle_offset: float = time_accum * 0.3 + pos.x * 0.1
+		var petals: int = 6
+		for i in range(petals):
+			var angle: float = (TAU / float(petals)) * float(i) + angle_offset
+			var col := _rainbow_color_from_angle(angle, 0.85, 0.95)
+			var petal_pos := pos + Vector2(cos(angle), sin(angle)) * r1 * 0.6
+			draw_circle(petal_pos, r1 * 0.45, col)
+		draw_circle(pos, r2, Color(1.0, 0.95, 0.70))
+		# Tiny glow
+		draw_circle(pos, r1 * 1.2, Color(1.0, 1.0, 1.0, 0.15))
+	else:
+		draw_circle(pos, r1, flower_petal_color)
+		draw_circle(pos + Vector2(0.0, -1.0), r2, flower_bud_color)
+		draw_circle(pos + Vector2(0.5, 0.5), r3, flower_mid_color)
+
+func _draw_poops(base: Vector2) -> void:
+	# Whimsical decorative elements around the base
+	var poop_color := Color(0.45, 0.32, 0.22)
+	var poop_highlight := Color(0.55, 0.42, 0.32)
+	var pot_width := 60.0 + float(pot_level) * 30.0
+	var poop_count: int = 3 + int(growth * 2.0)
+	for i in range(poop_count):
+		var seed: float = float(i) * 123.456
+		var x_pos: float = sin(seed) * pot_width * 0.35
+		var y_pos: float = 8.0 + cos(seed * 1.5) * 4.0
+		var size: float = 3.0 + sin(seed * 2.0) * 1.5
+		var poop_pos := base + Vector2(x_pos, y_pos)
+		# Main poop shape (stacked circles)
+		draw_circle(poop_pos, size, poop_color)
+		draw_circle(poop_pos + Vector2(0.0, -size * 0.6), size * 0.75, poop_color)
+		draw_circle(poop_pos + Vector2(0.0, -size * 1.0), size * 0.5, poop_color)
+		# Highlight
+		draw_circle(poop_pos + Vector2(-size * 0.3, -size * 0.3), size * 0.25, poop_highlight)
 
 func _draw_leaves(base: Vector2, tip: Vector2, stem_height: float) -> void:
 	if leaf_count <= 0:

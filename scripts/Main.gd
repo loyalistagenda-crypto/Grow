@@ -19,6 +19,15 @@ enum GameState { MENU, PLAYING }
 var game_state: int = GameState.MENU
 var menu_layer: CanvasLayer
 var selected_flower_variant: String = "purple"
+var current_flower_index: int = 0
+var flower_options: Array = []
+
+# Secret terminal
+var tree_click_count: int = 0
+var tree_click_timer: float = 0.0
+var tree_click_window: float = 2.0
+var terminal_open: bool = false
+var terminal_layer: CanvasLayer
 
 enum Action { WATER, FEED, PRUNE, SUN_DEC, SUN_INC, REPOT }
 var current_action: int = Action.WATER
@@ -115,6 +124,12 @@ func _process(delta: float) -> void:
 		# Only apply draggable actions during drag
 		if current_action == Action.WATER or current_action == Action.FEED:
 			_apply_action_drag(delta)
+	
+	# Tree click timer decay
+	if tree_click_timer > 0.0:
+		tree_click_timer -= delta
+		if tree_click_timer <= 0.0:
+			tree_click_count = 0
 
 	# Advance day/night cycle and update sky; global fast-forward via Engine.time_scale
 	var accel: bool = Input.is_key_pressed(KEY_QUOTELEFT)
@@ -139,6 +154,23 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if plant == null:
 		return
+	
+	# Check for tree click (secret terminal)
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		var mouse_pos := get_viewport().get_mouse_position()
+		var view := get_viewport_rect().size
+		var tree1_x: float = view.x * 0.12
+		var ground_y: float = view.y - ground_height
+		var tree_area := Rect2(tree1_x - 50.0, ground_y - 80.0, 100.0, 80.0)
+		
+		if tree_area.has_point(mouse_pos) and not terminal_open:
+			tree_click_count += 1
+			tree_click_timer = tree_click_window
+			if tree_click_count >= 5:
+				_open_terminal()
+				tree_click_count = 0
+			return
+	
 	if event is InputEventMouseButton:
 		if event.pressed:
 			# Check if clicking on pot area
@@ -161,6 +193,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.pressed:
 			_apply_action_press()
 	if event is InputEventKey and event.pressed:
+		if event.keycode == KEY_ESCAPE and terminal_open:
+			_close_terminal()
+			return
 		match event.keycode:
 			KEY_1:
 				ui_layer.visible = not ui_layer.visible
@@ -173,66 +208,253 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_R:
 				plant.repot()
 
+func _open_terminal() -> void:
+	terminal_open = true
+	terminal_layer = CanvasLayer.new()
+	add_child(terminal_layer)
+	
+	var bg := ColorRect.new()
+	bg.color = Color(0.0, 0.0, 0.0, 0.85)
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	terminal_layer.add_child(bg)
+	
+	var terminal_container := MarginContainer.new()
+	terminal_container.set_anchors_preset(Control.PRESET_CENTER)
+	terminal_container.offset_left = -300.0
+	terminal_container.offset_top = -200.0
+	terminal_container.offset_right = 300.0
+	terminal_container.offset_bottom = 200.0
+	terminal_layer.add_child(terminal_container)
+	
+	var terminal_panel := PanelContainer.new()
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.12, 0.15, 0.12)
+	panel_style.border_color = Color(0.30, 0.85, 0.35)
+	panel_style.border_width_left = 2
+	panel_style.border_width_right = 2
+	panel_style.border_width_top = 2
+	panel_style.border_width_bottom = 2
+	terminal_panel.add_theme_stylebox_override("panel", panel_style)
+	terminal_container.add_child(terminal_panel)
+	
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 10)
+	terminal_panel.add_child(vbox)
+	
+	var title := Label.new()
+	title.text = "SECRET TERMINAL"
+	title.add_theme_font_size_override("font_size", 24)
+	title.add_theme_color_override("font_color", Color(0.30, 0.85, 0.35))
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(title)
+	
+	var info := Label.new()
+	info.text = "Garden Development Console"
+	info.add_theme_font_size_override("font_size", 12)
+	info.add_theme_color_override("font_color", Color(0.60, 0.70, 0.60))
+	info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(info)
+	
+	var button_grid := GridContainer.new()
+	button_grid.columns = 2
+	button_grid.add_theme_constant_override("h_separation", 10)
+	button_grid.add_theme_constant_override("v_separation", 8)
+	vbox.add_child(button_grid)
+	
+	# Cheat buttons
+	var btn_grow := Button.new()
+	btn_grow.text = "Max Growth"
+	btn_grow.custom_minimum_size = Vector2(140.0, 35.0)
+	btn_grow.pressed.connect(_terminal_max_growth)
+	button_grid.add_child(btn_grow)
+	
+	var btn_bloom := Button.new()
+	btn_bloom.text = "Instant Bloom"
+	btn_bloom.custom_minimum_size = Vector2(140.0, 35.0)
+	btn_bloom.pressed.connect(_terminal_instant_bloom)
+	button_grid.add_child(btn_bloom)
+	
+	var btn_water := Button.new()
+	btn_water.text = "Full Water"
+	btn_water.custom_minimum_size = Vector2(140.0, 35.0)
+	btn_water.pressed.connect(_terminal_full_water)
+	button_grid.add_child(btn_water)
+	
+	var btn_nutrients := Button.new()
+	btn_nutrients.text = "Full Nutrients"
+	btn_nutrients.custom_minimum_size = Vector2(140.0, 35.0)
+	btn_nutrients.pressed.connect(_terminal_full_nutrients)
+	button_grid.add_child(btn_nutrients)
+	
+	var btn_heal := Button.new()
+	btn_heal.text = "Heal Plant"
+	btn_heal.custom_minimum_size = Vector2(140.0, 35.0)
+	btn_heal.pressed.connect(_terminal_heal_plant)
+	button_grid.add_child(btn_heal)
+	
+	var btn_repot := Button.new()
+	btn_repot.text = "Upgrade Pot"
+	btn_repot.custom_minimum_size = Vector2(140.0, 35.0)
+	btn_repot.pressed.connect(_terminal_upgrade_pot)
+	button_grid.add_child(btn_repot)
+	
+	var close_btn := Button.new()
+	close_btn.text = "Close Terminal [ESC]"
+	close_btn.custom_minimum_size = Vector2(280.0, 40.0)
+	close_btn.pressed.connect(_close_terminal)
+	vbox.add_child(close_btn)
+
+func _close_terminal() -> void:
+	if terminal_layer:
+		terminal_layer.queue_free()
+		terminal_layer = null
+	terminal_open = false
+
+func _terminal_max_growth() -> void:
+	if plant:
+		plant.growth = 1.0
+
+func _terminal_instant_bloom() -> void:
+	if plant:
+		plant.bloom_progress = 1.0
+
+func _terminal_full_water() -> void:
+	if plant:
+		plant.moisture = 1.0
+
+func _terminal_full_nutrients() -> void:
+	if plant:
+		plant.nutrients = 1.0
+
+func _terminal_heal_plant() -> void:
+	if plant:
+		plant.wilted_leaves = 0
+		plant.wilt_accum = 0.0
+
+func _terminal_upgrade_pot() -> void:
+	if plant:
+		plant.repot()
+
 func _build_menu() -> void:
 	menu_layer = CanvasLayer.new()
 	add_child(menu_layer)
 	
-	var center := MarginContainer.new()
-	center.set_anchors_preset(Control.PRESET_CENTER)
-	center.offset_left = -200.0
-	center.offset_top = -100.0
-	center.offset_right = 200.0
-	center.offset_bottom = 100.0
-	menu_layer.add_child(center)
+	# Title at top of screen with decorative styling
+	var title_container := MarginContainer.new()
+	title_container.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	title_container.add_theme_constant_override("margin_top", 20)
+	title_container.add_theme_constant_override("margin_left", 20)
+	title_container.add_theme_constant_override("margin_right", 20)
+	menu_layer.add_child(title_container)
 	
-	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 20)
-	center.add_child(vbox)
+	var title_vbox := VBoxContainer.new()
+	title_vbox.add_theme_constant_override("separation", 5)
+	title_container.add_child(title_vbox)
 	
 	var title := Label.new()
 	title.text = "Grow a Single Plant"
-	title.add_theme_font_size_override("font_size", 42)
+	title.add_theme_font_size_override("font_size", 48)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox.add_child(title)
+	title.add_theme_color_override("font_color", Color(0.95, 0.90, 0.70))
+	title.add_theme_color_override("font_outline_color", Color(0.25, 0.20, 0.15))
+	title.add_theme_constant_override("outline_size", 8)
+	title_vbox.add_child(title)
+	
+	# Center carousel container
+	var center := MarginContainer.new()
+	center.set_anchors_preset(Control.PRESET_CENTER)
+	center.offset_left = -300.0
+	center.offset_top = -160.0
+	center.offset_right = 300.0
+	center.offset_bottom = 40.0
+	menu_layer.add_child(center)
+	
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 15)
+	center.add_child(vbox)
 	
 	# Flower selection label
 	var flower_label := Label.new()
-	flower_label.text = "Choose a Plant Type:"
-	flower_label.add_theme_font_size_override("font_size", 18)
+	flower_label.text = "Choose Your Plant:"
+	flower_label.add_theme_font_size_override("font_size", 20)
+	flower_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(flower_label)
 	
-	# Scrollable flower selection container
-	var scroll_container := ScrollContainer.new()
-	scroll_container.custom_minimum_size = Vector2(300.0, 240.0)
-	vbox.add_child(scroll_container)
-	
-	var flower_grid := VBoxContainer.new()
-	flower_grid.add_theme_constant_override("separation", 8)
-	scroll_container.add_child(flower_grid)
-	
-	# Create 3 flower option buttons
-	var flowers := [
+	# Store flower options
+	flower_options = [
 		{"name": "Purple Flower", "variant": "purple", "color": Color(0.75, 0.55, 0.85)},
 		{"name": "Yellow Flower", "variant": "yellow", "color": Color(0.95, 0.85, 0.40)},
 		{"name": "Red Flower", "variant": "red", "color": Color(0.90, 0.35, 0.35)},
 		{"name": "Rainbow Flower", "variant": "rainbow", "color": Color(1.0, 1.0, 1.0)},
-		{"name": "Rose Bush", "variant": "rose_bush", "color": Color(0.95, 0.45, 0.55)}
+		{"name": "Rose Bush", "variant": "rose_bush", "color": Color(0.95, 0.45, 0.55)},
+		{"name": "Rainbow Rose Bush", "variant": "rainbow_rose_bush", "color": Color(1.0, 0.75, 0.85)}
 	]
 	
-	for flower in flowers:
-		var btn := Button.new()
-		btn.custom_minimum_size = Vector2(260.0, 50.0)
-		btn.text = flower["name"]
-		btn.add_theme_color_override("font_color", flower["color"])
-		btn.add_theme_font_size_override("font_size", 16)
-		btn.pressed.connect(_on_flower_selected.bindv([flower["variant"]]))
-		flower_grid.add_child(btn)
+	# Horizontal carousel container
+	var carousel_container := HBoxContainer.new()
+	carousel_container.add_theme_constant_override("separation", 20)
+	carousel_container.alignment = BoxContainer.ALIGNMENT_CENTER
+	vbox.add_child(carousel_container)
 	
-	var continue_btn := Button.new()
-	continue_btn.text = "Continue Saved Flower"
-	continue_btn.custom_minimum_size = Vector2(300.0, 50.0)
-	continue_btn.pressed.connect(_on_continue_game)
-	vbox.add_child(continue_btn)
+	# Left arrow button
+	var left_arrow := Button.new()
+	left_arrow.text = "<"
+	left_arrow.custom_minimum_size = Vector2(60.0, 80.0)
+	left_arrow.add_theme_font_size_override("font_size", 32)
+	left_arrow.pressed.connect(_on_flower_carousel_left)
+	carousel_container.add_child(left_arrow)
+	
+	# Flower display panel
+	var display_panel := PanelContainer.new()
+	display_panel.custom_minimum_size = Vector2(300.0, 100.0)
+	carousel_container.add_child(display_panel)
+	
+	var display_vbox := VBoxContainer.new()
+	display_vbox.add_theme_constant_override("separation", 10)
+	display_panel.add_child(display_vbox)
+	
+	# Plant preview
+	var preview := Control.new()
+	preview.name = "PlantPreview"
+	preview.custom_minimum_size = Vector2(280.0, 120.0)
+	preview.draw.connect(_on_preview_draw.bind(preview))
+	display_vbox.add_child(preview)
+	
+	var flower_name_label := Label.new()
+	flower_name_label.name = "FlowerNameLabel"
+	flower_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	flower_name_label.add_theme_font_size_override("font_size", 24)
+	display_vbox.add_child(flower_name_label)
+	
+	var flower_desc := Label.new()
+	flower_desc.name = "FlowerDescLabel"
+	flower_desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	flower_desc.add_theme_font_size_override("font_size", 14)
+	flower_desc.autowrap_mode = TextServer.AUTOWRAP_WORD
+	display_vbox.add_child(flower_desc)
+	
+	var select_btn := Button.new()
+	select_btn.text = "Select This Plant"
+	select_btn.custom_minimum_size = Vector2(200.0, 40.0)
+	select_btn.pressed.connect(_on_flower_select_current)
+	display_vbox.add_child(select_btn)
+	
+	# Right arrow button
+	var right_arrow := Button.new()
+	right_arrow.text = ">"
+	right_arrow.custom_minimum_size = Vector2(60.0, 80.0)
+	right_arrow.add_theme_font_size_override("font_size", 32)
+	right_arrow.pressed.connect(_on_flower_carousel_right)
+	carousel_container.add_child(right_arrow)
+	
+	var collection_btn := Button.new()
+	collection_btn.text = "View Collection"
+	collection_btn.custom_minimum_size = Vector2(200.0, 40.0)
+	collection_btn.pressed.connect(_on_view_collection)
+	vbox.add_child(collection_btn)
+	
+	# Update display to show first flower
+	_update_flower_display()
 
 func _on_flower_selected(variant: String) -> void:
 	selected_flower_variant = variant
@@ -241,12 +463,139 @@ func _on_flower_selected(variant: String) -> void:
 	_build_scene()
 	_build_ui()
 
-func _on_continue_game() -> void:
-	# TODO: Load saved game data
-	game_state = GameState.PLAYING
-	menu_layer.queue_free()
-	_build_scene()
-	_build_ui()
+func _on_flower_carousel_left() -> void:
+	current_flower_index -= 1
+	if current_flower_index < 0:
+		current_flower_index = flower_options.size() - 1
+	_update_flower_display()
+
+func _on_flower_carousel_right() -> void:
+	current_flower_index += 1
+	if current_flower_index >= flower_options.size():
+		current_flower_index = 0
+	_update_flower_display()
+
+func _on_flower_select_current() -> void:
+	var current_flower = flower_options[current_flower_index]
+	_on_flower_selected(current_flower["variant"])
+
+func _update_flower_display() -> void:
+	if not menu_layer:
+		return
+	var current_flower = flower_options[current_flower_index]
+	var name_label = menu_layer.find_child("FlowerNameLabel", true, false)
+	var desc_label = menu_layer.find_child("FlowerDescLabel", true, false)
+	var preview = menu_layer.find_child("PlantPreview", true, false)
+	if name_label:
+		name_label.text = current_flower["name"]
+		name_label.add_theme_color_override("font_color", current_flower["color"])
+	if desc_label:
+		var descriptions := {
+			"purple": "Classic elegant blooms",
+			"yellow": "Bright sunny flowers",
+			"red": "Bold passionate petals",
+			"rainbow": "Magical spectrum blooms with glow",
+			"rose_bush": "Natural branching with tiny roses",
+			"rainbow_rose_bush": "Bushy rainbow blooms with surprises"
+		}
+		desc_label.text = descriptions.get(current_flower["variant"], "Beautiful plant")
+	if preview:
+		preview.queue_redraw()
+
+func _on_preview_draw(preview_control: Control) -> void:
+	var current_flower = flower_options[current_flower_index]
+	var variant: String = current_flower["variant"]
+	var size := preview_control.size
+	var center := Vector2(size.x * 0.5, size.y - 10.0)
+	
+	# Background
+	preview_control.draw_rect(Rect2(Vector2.ZERO, size), Color(0.15, 0.20, 0.15))
+	
+	# Draw miniature pot
+	var pot_w := 20.0
+	var pot_h := 15.0
+	var pot_pts := PackedVector2Array([
+		center + Vector2(-pot_w * 0.5, -5.0),
+		center + Vector2(pot_w * 0.5, -5.0),
+		center + Vector2(pot_w * 0.4, -5.0 + pot_h),
+		center + Vector2(-pot_w * 0.4, -5.0 + pot_h)
+	])
+	preview_control.draw_colored_polygon(pot_pts, Color(0.55, 0.35, 0.20))
+	
+	if variant == "rose_bush" or variant == "rainbow_rose_bush":
+		# Mini rose bush with multiple stems from center
+		var stem_col := Color(0.16, 0.50, 0.25)
+		var pot_top := center + Vector2(0.0, -5.0)
+		for i in range(5):
+			var t: float = float(i) / 4.0
+			var angle: float = lerp(-0.6, 0.6, t)
+			var height: float = randf_range(35.0, 50.0)
+			var stem_tip := pot_top + Vector2(sin(angle) * height * 0.4, -height)
+			preview_control.draw_line(pot_top, stem_tip, stem_col, 1.5)
+			# Tiny bloom at tip
+			if variant == "rainbow_rose_bush":
+				for j in range(6):
+					var petal_angle: float = (TAU / 6.0) * float(j)
+					var col := Color.from_hsv(float(j) / 6.0, 0.9, 0.95)
+					var petal_pos := stem_tip + Vector2(cos(petal_angle), sin(petal_angle)) * 2.0
+					preview_control.draw_circle(petal_pos, 1.5, col)
+				preview_control.draw_circle(stem_tip, 1.5, Color(1.0, 0.95, 0.70))
+			else:
+				preview_control.draw_circle(stem_tip, 2.5, Color(0.95, 0.45, 0.55))
+				preview_control.draw_circle(stem_tip, 1.5, Color(0.85, 0.35, 0.45))
+	else:
+		# Single stem flower
+		var stem_col := Color(0.16, 0.50, 0.25)
+		var stem_base := center + Vector2(0.0, -5.0)
+		var stem_tip := stem_base + Vector2(0.0, -60.0)
+		preview_control.draw_line(stem_base, stem_tip, stem_col, 2.0)
+		
+		# Leaves
+		for i in range(3):
+			var y: float = lerp(-10.0, -50.0, float(i + 1) / 4.0)
+			var side: float = 1.0 if i % 2 == 0 else -1.0
+			var leaf_base := stem_base + Vector2(0.0, y)
+			var leaf_tip := leaf_base + Vector2(side * 8.0, -3.0)
+			var leaf_pts := PackedVector2Array([
+				leaf_base,
+				leaf_base + Vector2(side * 4.0, 0.0),
+				leaf_tip,
+			])
+			preview_control.draw_colored_polygon(leaf_pts, Color(0.25, 0.70, 0.35))
+		
+		# Flower at top
+		if variant == "rainbow":
+			# Mini rainbow flower
+			for i in range(12):
+				var angle: float = (TAU / 12.0) * float(i)
+				var col := Color.from_hsv(float(i) / 12.0, 0.9, 0.95)
+				var petal_tip := stem_tip + Vector2(cos(angle), sin(angle)) * 8.0
+				var petal_pts := PackedVector2Array([
+					stem_tip,
+					stem_tip + Vector2(cos(angle - 0.3), sin(angle - 0.3)) * 4.0,
+					petal_tip,
+					stem_tip + Vector2(cos(angle + 0.3), sin(angle + 0.3)) * 4.0
+				])
+				preview_control.draw_colored_polygon(petal_pts, col)
+			preview_control.draw_circle(stem_tip, 3.0, Color(1.0, 1.0, 1.0))
+		else:
+			# Regular flower
+			var petal_col: Color = current_flower["color"]
+			for i in range(8):
+				var angle: float = (TAU / 8.0) * float(i)
+				var petal_tip := stem_tip + Vector2(cos(angle), sin(angle)) * 7.0
+				var petal_pts := PackedVector2Array([
+					stem_tip,
+					stem_tip + Vector2(cos(angle - 0.3), sin(angle - 0.3)) * 3.5,
+					petal_tip,
+					stem_tip + Vector2(cos(angle + 0.3), sin(angle + 0.3)) * 3.5
+				])
+				preview_control.draw_colored_polygon(petal_pts, petal_col)
+			preview_control.draw_circle(stem_tip, 2.5, petal_col * 0.8)
+
+func _on_view_collection() -> void:
+	# TODO: Show collection of grown plants
+	pass
 
 func _build_scene() -> void:
 	plant = Plant.new()
