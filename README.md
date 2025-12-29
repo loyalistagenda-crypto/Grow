@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Grow - A Single Plant Care Game
 
 A cozy tamagotchi-style plant growing game made with Godot 4.
@@ -6,7 +5,9 @@ A cozy tamagotchi-style plant growing game made with Godot 4.
 ## Features
 
 - **Plant Care System**: Water, feed nutrients, prune, and repot your plant
-- **Three Flower Variants**: Choose between purple, yellow, or red flowers
+- **Flower Variants**: Purple, yellow, red, and the new rainbow flower
+- **Rainbow Bloom**: Bigger multi-layer petals across the spectrum with a gentle glow
+- **Rose Bush**: Natural branching with smaller leaves and petite blooms that appear at full bloom
 - **Day/Night Cycle**: 240-second cycle with smooth sky transitions, sun/moon arcs, and stars
 - **Branching System**: Plant grows taller and develops branches as you repot
 - **Dynamic Lighting**: Move your plant under the shed canopy to control sunlight exposure
@@ -26,7 +27,7 @@ A cozy tamagotchi-style plant growing game made with Godot 4.
 
 ## How to Play
 
-1. **Choose Your Flower**: Select purple, yellow, or red at the start menu
+1. **Choose Your Plant**: Select Purple Flower, Yellow Flower, Red Flower, Rainbow Flower, or Rose Bush at the start menu
 2. **Care for Your Plant**: 
    - Keep moisture and nutrients balanced
    - Maintain ideal sunlight (55% ± 25%)
@@ -55,10 +56,11 @@ grow/
 2. Press F5 or click Run
 3. Optionally add your own music file at `assets/audio/bg_music.mp3`
 
+## Notes on Rainbow Glow
+
+- The glow effect is simulated with additive blending and soft halos around the flower.
+- For an even brighter bloom, enable the Glow post-process in your Godot project settings (Project Settings → Rendering → Effects → Glow).
+
 ## License
 
 MIT License - Feel free to use and modify for your own projects!
-=======
-# Grow
-grow game
->>>>>>> f6c61a3ad2afbb9ca72edf544262962ef73b2907

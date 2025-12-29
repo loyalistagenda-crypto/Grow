@@ -197,7 +197,7 @@ func _build_menu() -> void:
 	
 	# Flower selection label
 	var flower_label := Label.new()
-	flower_label.text = "Choose a Flower Color:"
+	flower_label.text = "Choose a Plant Type:"
 	flower_label.add_theme_font_size_override("font_size", 18)
 	vbox.add_child(flower_label)
 	
@@ -212,9 +212,11 @@ func _build_menu() -> void:
 	
 	# Create 3 flower option buttons
 	var flowers := [
-		{"name": "Purple", "variant": "purple", "color": Color(0.75, 0.55, 0.85)},
-		{"name": "Yellow", "variant": "yellow", "color": Color(0.95, 0.85, 0.40)},
-		{"name": "Red", "variant": "red", "color": Color(0.90, 0.35, 0.35)}
+		{"name": "Purple Flower", "variant": "purple", "color": Color(0.75, 0.55, 0.85)},
+		{"name": "Yellow Flower", "variant": "yellow", "color": Color(0.95, 0.85, 0.40)},
+		{"name": "Red Flower", "variant": "red", "color": Color(0.90, 0.35, 0.35)},
+		{"name": "Rainbow Flower", "variant": "rainbow", "color": Color(1.0, 1.0, 1.0)},
+		{"name": "Rose Bush", "variant": "rose_bush", "color": Color(0.95, 0.45, 0.55)}
 	]
 	
 	for flower in flowers:
@@ -306,6 +308,12 @@ func _build_ui() -> void:
 	music_btn.pressed.connect(_toggle_music)
 	box.add_child(music_btn)
 	action_buttons["music"] = music_btn
+
+	# Return to menu button
+	var menu_btn := Button.new()
+	menu_btn.text = "Return to Menu"
+	menu_btn.pressed.connect(_return_to_menu)
+	box.add_child(menu_btn)
 
 	stats_label = Label.new()
 	stats_label.text = "Growth: 0%\nMoisture: 0%"
@@ -901,3 +909,20 @@ func _toggle_music() -> void:
 		music_player.play()
 		if "music" in action_buttons:
 			action_buttons["music"].text = "Music: ON"
+
+func _return_to_menu() -> void:
+	game_state = GameState.MENU
+	# Clean up current game
+	if plant:
+		plant.queue_free()
+		plant = null
+	# Remove shed (it's a child of Main)
+	for child in get_children():
+		if child.get_script() and child.get_script().resource_path.contains("Shed.gd"):
+			child.queue_free()
+	if ui_layer:
+		ui_layer.queue_free()
+		ui_layer = null
+	action_buttons.clear()
+	# Rebuild menu
+	_build_menu()

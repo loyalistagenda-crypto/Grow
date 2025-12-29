@@ -19,12 +19,14 @@ class_name Plant
 @export var bud_radius: float = 12.0
 @export var stem_color: Color = Color(0.16, 0.50, 0.25)
 @export var leaf_color: Color = Color(0.25, 0.70, 0.35)
+@export var rainbow_glow_strength: float = 0.6
 
 # Flower variant colors
 var variant_name: String = "purple"
 var flower_petal_color: Color = Color(0.75, 0.55, 0.85)  # Purple petals
 var flower_bud_color: Color = Color(0.65, 0.45, 0.75)  # Purple bud
 var flower_mid_color: Color = Color(0.55, 0.35, 0.65)  # Purple mid
+var _rainbow_glow_material: CanvasItemMaterial
 
 @export var wilt_threshold: float = 0.22
 @export var overwater_threshold: float = 0.86
@@ -41,6 +43,18 @@ var wilted_leaves: int = 0
 var pot_level: int = 0
 var wilt_accum: float = 0.0
 var splash_timer: float = 0.0
+var _rng: RandomNumberGenerator
+var _rose_branch_plan: Array = [] # Per-stem randomized side-branch spawn plan
+
+func _ready() -> void:
+	if variant_name == "rose_bush":
+		_ensure_rng()
+		_init_rose_bush_plan()
+
+func _ensure_rng() -> void:
+	if _rng == null:
+		_rng = RandomNumberGenerator.new()
+		_rng.randomize()
 
 func _process(delta: float) -> void:
 	time_accum += delta
@@ -94,6 +108,21 @@ func set_flower_variant(variant: String) -> void:
 			flower_petal_color = Color(0.90, 0.35, 0.35)
 			flower_bud_color = Color(0.80, 0.25, 0.25)
 			flower_mid_color = Color(0.70, 0.15, 0.15)
+		"rainbow":
+			# Base palette unused for rainbow; keep pleasant defaults
+			flower_petal_color = Color(1.0, 1.0, 1.0)
+			flower_bud_color = Color(1.0, 1.0, 1.0)
+			flower_mid_color = Color(0.95, 0.95, 0.95)
+		"rose_bush":
+			# Soft rose tones; bush uses its own drawing path
+			flower_petal_color = Color(0.95, 0.45, 0.55)
+			flower_bud_color = Color(0.85, 0.35, 0.45)
+			flower_mid_color = Color(0.75, 0.25, 0.35)
+			# Smaller leaves for a bushy look
+			leaf_size = Vector2(18.0, 8.0)
+			leaf_count = 12
+			_ensure_rng()
+			_init_rose_bush_plan()
 		_:
 			# Default to purple
 			variant_name = "purple"
@@ -159,6 +188,12 @@ func _draw() -> void:
 	var tip := base + Vector2(sway, -stem_height)
 	var stem_col := stem_color.darkened(minf(0.4, float(wilted_leaves) * 0.05))
 	_draw_pot(base)
+	
+	# Rose bush uses a custom branching + bloom style
+	if variant_name == "rose_bush":
+		_draw_rose_bush(base)
+		_draw_splash(base)
+		return
 	# Draw main stem
 	draw_line(base, tip, stem_col, stem_width, true)
 	
@@ -189,6 +224,125 @@ func _draw() -> void:
 	# Primary flower at main tip
 	_draw_flower(tip)
 	_draw_splash(base)
+
+func _rose_branch_width(set_index: int) -> float:
+	# Base widths with "couple pixels" thinner per subsequent set, each grows until its own stop threshold.
+	var base1: float = stem_width * 0.6
+	var base2: float = maxf(1.0, base1 - 2.0)
+	var base3: float = maxf(1.0, base2 - 2.0)
+	var stop_thresholds := [0.80, 0.90, 0.98]
+	var bases := [base1, base2, base3]
+	var grow_px: float = 2.0
+	var progress: float = clampf(growth / stop_thresholds[set_index], 0.0, 1.0)
+	return bases[set_index] + grow_px * progress
+
+func _init_rose_bush_plan() -> void:
+	# Create a deterministic per-stem plan of side branches: where and when they spawn.
+	_rose_branch_plan = []
+	var stems_max: int = 10
+	for i in range(stems_max):
+		var stem_plan := {
+			"sets": [[], [], []] # three sets of branches
+		}
+		# Set 1: early, few branches
+		var n1: int = _rng.randi_range(1, 2)
+		for j in range(n1):
+			stem_plan["sets"][0].append({
+				"t": _rng.randf_range(0.35, 0.80),
+				"side": 1.0 if (_rng.randf() > 0.5) else -1.0,
+				"spawn_at": _rng.randf_range(0.25, 0.45)
+			})
+		# Set 2: mid, thinner, similar count
+		var n2: int = _rng.randi_range(1, 2)
+		for j in range(n2):
+			stem_plan["sets"][1].append({
+				"t": _rng.randf_range(0.40, 0.85),
+				"side": 1.0 if (_rng.randf() > 0.5) else -1.0,
+				"spawn_at": _rng.randf_range(0.40, 0.65)
+			})
+		# Set 3: late, thinnest, optional
+		var n3: int = _rng.randi_range(0, 2)
+		for j in range(n3):
+			stem_plan["sets"][2].append({
+				"t": _rng.randf_range(0.45, 0.90),
+				"side": 1.0 if (_rng.randf() > 0.5) else -1.0,
+				"spawn_at": _rng.randf_range(0.55, 0.80)
+			})
+		_rose_branch_plan.append(stem_plan)
+
+func _draw_rose_bush(base: Vector2) -> void:
+	var bush_height: float = _ease_out(growth) * max_height * 0.68
+	var stem_col := stem_color.darkened(minf(0.4, float(wilted_leaves) * 0.05))
+	var stems: int = clamp(5 + int(floor(growth * 6.0)), 3, 10) # start fewer and add with growth
+	var pot_spread: float = 36.0 + float(pot_level) * 10.0
+	var sway := sin(time_accum * 1.1) * 4.0 * growth
+	var can_bloom: bool = bloom_progress >= 1.0
+	for i in range(stems):
+		var tpos: float = float(i) / float(max(1, stems - 1))
+		var angle_spread: float = lerp(-0.65, 0.65, tpos)
+		var attach := base + Vector2(lerp(-pot_spread, pot_spread, tpos), 0.0)
+		var length: float = bush_height * lerp(0.55, 0.85, 0.3 + 0.7 * tpos)
+		var dir := Vector2(sway + sin(time_accum * 0.8 + float(i)) * 2.0, -length).rotated(angle_spread * (0.9 + 0.1 * sin(float(i))))
+		var tip := attach + dir
+		draw_line(attach, tip, stem_col, stem_width * 0.75, true)
+
+		# Draw three randomized side-branch sets with staged thickness and spawn timing
+		var stem_plan: Dictionary = {}
+		if i < _rose_branch_plan.size():
+			stem_plan = _rose_branch_plan[i]
+		else:
+			stem_plan = {"sets": [[], [], []]}
+		for set_index in range(3):
+			var set_branches: Array = stem_plan["sets"][set_index]
+			var thickness: float = _rose_branch_width(set_index)
+			for br in set_branches:
+				if growth < float(br["spawn_at"]):
+					continue
+				var bt: float = float(br["t"]) # position along stem
+				var side_dir := dir.rotated(br["side"] * 0.55)
+				var side_len: float = length * (0.28 + 0.10 * growth) # grow side-branch length modestly
+				var side_attach := attach + dir * bt
+				var side_tip := side_attach + side_dir.normalized() * side_len
+				draw_line(side_attach, side_tip, stem_col, thickness, true)
+				_draw_rose_bush_leaves(side_attach, side_tip)
+				if can_bloom:
+					_draw_small_bloom(side_tip)
+
+		_draw_rose_bush_leaves(attach, tip)
+		if can_bloom:
+			_draw_small_bloom(tip)
+
+func _draw_rose_bush_leaves(a: Vector2, b: Vector2) -> void:
+	var wilt_dark := minf(0.6, float(wilted_leaves) * 0.07)
+	var leaf_col := leaf_color.darkened(wilt_dark)
+	var dir := b - a
+	var len: float = maxf(1.0, dir.length())
+	var n: int = 4
+	for i in range(n):
+		var t: float = float(i + 1) / float(n + 1)
+		if growth < t * 0.9:
+			continue
+		var p := a + dir * t
+		var side := 1.0 if i % 2 == 0 else -1.0
+		var normal := Vector2(-dir.y, dir.x).normalized() * side
+		var lsize := leaf_size
+		var tip := p + normal * lsize.x * 0.35 + dir.normalized() * lsize.y * 0.25
+		var mid := p + normal * lsize.x * 0.18
+		var pts := PackedVector2Array([
+			p,
+			mid,
+			tip,
+		])
+		draw_colored_polygon(pts, leaf_col)
+
+func _draw_small_bloom(pos: Vector2) -> void:
+	# Tiny layered rose bloom; only used at full bloom
+	var r1: float = bud_radius * 0.55
+	var r2: float = bud_radius * 0.38
+	var r3: float = bud_radius * 0.22
+	draw_circle(pos, r1, flower_petal_color)
+	draw_circle(pos + Vector2(0.0, -1.0), r2, flower_bud_color)
+	draw_circle(pos + Vector2(0.5, 0.5), r3, flower_mid_color)
 
 func _draw_leaves(base: Vector2, tip: Vector2, stem_height: float) -> void:
 	if leaf_count <= 0:
@@ -255,6 +409,10 @@ func _draw_flower(tip: Vector2) -> void:
 	var open_amount: float = clampf(bloom_progress, 0.0, 1.0)
 	var bloom_radius: float = bud_radius + open_amount * 18.0
 	
+	if variant_name == "rainbow":
+		_draw_rainbow_flower(tip, open_amount, bloom_radius)
+		return
+	
 	if open_amount < 0.3:
 		# Bud stage - simple circles
 		draw_circle(tip, bloom_radius, flower_bud_color)
@@ -315,6 +473,86 @@ func _draw_flower(tip: Vector2) -> void:
 		draw_circle(tip, bloom_radius * 0.85, flower_petal_color * 1.1)
 		draw_circle(tip, bloom_radius * 0.60, flower_bud_color)
 		draw_circle(tip, bloom_radius * 0.35, flower_mid_color)
+
+func _rainbow_color_from_angle(angle: float, sat: float = 0.9, val: float = 1.0, alpha: float = 1.0) -> Color:
+	var h: float = fposmod(angle, TAU) / TAU
+	return Color.from_hsv(h, sat, val, alpha)
+
+func _draw_rainbow_glow(center: Vector2, radius: float) -> void:
+	var steps: int = 6
+	for i in range(steps):
+		var t: float = float(i + 1) / float(steps)
+		var r: float = radius * lerp(1.1, 1.8, t)
+		var a: float = rainbow_glow_strength * lerp(0.35, 0.0, t)
+		draw_circle(center, r, Color(1.0, 1.0, 1.0, a))
+
+func _draw_rainbow_flower(tip: Vector2, open_amount: float, bloom_radius: float) -> void:
+	var spin: float = time_accum * 0.20
+	if open_amount < 0.3:
+		# Rainbow bud: multi-hue ring + soft center
+		var ring_segments: int = 24
+		var ring_r: float = bloom_radius * 1.15
+		var ring_w: float = bloom_radius * 0.35
+		for i in range(ring_segments):
+			var a0: float = (TAU / float(ring_segments)) * float(i) + spin
+			var a1: float = a0 + (TAU / float(ring_segments))
+			var col := _rainbow_color_from_angle(a0, 0.95, 0.95)
+			draw_arc(tip, ring_r, a0, a1, 8, col, ring_w, true)
+		draw_circle(tip, bloom_radius * 0.65, Color(1.0, 1.0, 1.0))
+		_draw_rainbow_glow(tip, ring_r)
+		return
+	elif open_amount < 1.0:
+		# Blooming stage: more petals, spectrum colors
+		var growth_stage: float = floor((open_amount - 0.3) / 0.1) / 7.0
+		var stage_scale: float = 1.0 + growth_stage * 1.0  # a bit larger
+		var petal_count: int = 12
+		var petal_length: float = bloom_radius * 1.7 * stage_scale
+		var petal_width: float = bloom_radius * 0.8 * stage_scale
+		var rotation_offset: float = spin
+		for i in range(petal_count):
+			var angle: float = (TAU / float(petal_count)) * float(i) + rotation_offset
+			var petal_tip: Vector2 = tip + Vector2(cos(angle), sin(angle)) * petal_length
+			var petal_mid1: Vector2 = tip + Vector2(cos(angle - 0.35), sin(angle - 0.35)) * petal_width
+			var petal_mid2: Vector2 = tip + Vector2(cos(angle + 0.35), sin(angle + 0.35)) * petal_width
+			var petal_pts := PackedVector2Array([tip, petal_mid1, petal_tip, petal_mid2])
+			var col := _rainbow_color_from_angle(angle, 0.95, 0.95)
+			draw_colored_polygon(petal_pts, col)
+		# Center
+		draw_circle(tip, bloom_radius * 0.55 * stage_scale, Color(1.0, 1.0, 1.0))
+		draw_circle(tip, bloom_radius * 0.30 * stage_scale, Color(1.0, 0.95, 0.85))
+		_draw_rainbow_glow(tip, bloom_radius * 1.6)
+		return
+	else:
+		# Full bloom: multi-layer rainbow petals
+		var rotation_offset: float = spin * 0.8
+		var outer_count: int = 16
+		var outer_length: float = bloom_radius * 2.6
+		var outer_width: float = bloom_radius * 1.1
+		for i in range(outer_count):
+			var angle: float = (TAU / float(outer_count)) * float(i) + rotation_offset
+			var petal_tip: Vector2 = tip + Vector2(cos(angle), sin(angle)) * outer_length
+			var petal_mid1: Vector2 = tip + Vector2(cos(angle - 0.30), sin(angle - 0.30)) * outer_width
+			var petal_mid2: Vector2 = tip + Vector2(cos(angle + 0.30), sin(angle + 0.30)) * outer_width
+			var petal_pts := PackedVector2Array([tip, petal_mid1, petal_tip, petal_mid2])
+			var col := _rainbow_color_from_angle(angle, 0.90, 0.95)
+			draw_colored_polygon(petal_pts, col)
+		# Inner ring petals
+		var mid_count: int = 16
+		var mid_length: float = bloom_radius * 1.8
+		var mid_width: float = bloom_radius * 0.75
+		for i in range(mid_count):
+			var angle: float = (TAU / float(mid_count)) * float(i) + rotation_offset + (TAU / 32.0)
+			var petal_tip: Vector2 = tip + Vector2(cos(angle), sin(angle)) * mid_length
+			var petal_mid1: Vector2 = tip + Vector2(cos(angle - 0.40), sin(angle - 0.40)) * mid_width
+			var petal_mid2: Vector2 = tip + Vector2(cos(angle + 0.40), sin(angle + 0.40)) * mid_width
+			var petal_pts := PackedVector2Array([tip, petal_mid1, petal_tip, petal_mid2])
+			var col := _rainbow_color_from_angle(angle + 0.1, 0.95, 1.0)
+			draw_colored_polygon(petal_pts, col)
+		# Center layers
+		draw_circle(tip, bloom_radius * 0.95, Color(1.0, 1.0, 1.0))
+		draw_circle(tip, bloom_radius * 0.65, Color(1.0, 0.95, 0.85))
+		draw_circle(tip, bloom_radius * 0.40, Color(1.0, 0.9, 0.6))
+		_draw_rainbow_glow(tip, bloom_radius * 2.2)
 
 func _draw_splash(base: Vector2) -> void:
 	if splash_timer <= 0.0:
