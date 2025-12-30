@@ -1,13 +1,12 @@
 extends Node2D
 
 var plant: Plant
-var stats_label: Label
 var info_label: Label
-var action_hint: Label
+var stats_label: Label
+var sunlight_indicator: ProgressBar
 var ground_height: float = 120.0
 var sky_color: Color = Color(0.36, 0.48, 0.72)
 var ground_color: Color = Color(0.12, 0.30, 0.14)
-var sunlight_indicator: ProgressBar
 var action_buttons: Dictionary = {}
 var ui_layer: CanvasLayer
 var drag_active: bool = false
@@ -28,6 +27,16 @@ var tree_click_timer: float = 0.0
 var tree_click_window: float = 2.0
 var terminal_open: bool = false
 var terminal_layer: CanvasLayer
+
+# Secret practice ivy - left trees 5 clicks in menu
+var left_tree_click_count: int = 0
+var left_tree_click_timer: float = 0.0
+var left_tree_click_window: float = 2.0
+
+# Secret space bar control for landscape/portrait toggle
+var space_press_count: int = 0
+var space_press_timer: float = 0.0
+var space_press_window: float = 0.8
 
 enum Action { WATER, FEED, PRUNE, SUN_DEC, SUN_INC, REPOT }
 var current_action: int = Action.WATER
@@ -86,39 +95,20 @@ func _process(delta: float) -> void:
 		var view_width := get_viewport_rect().size.x
 		plant.position.x = clampf(new_x, 100.0, view_width - 100.0)
 	
-	# Calculate sunlight based on position under awning
-	if plant and game_state == GameState.PLAYING:
-		var view_width := get_viewport_rect().size.x
-		# Canopy coverage bounds (open shed: four posts + sloped roof)
-		var shed_left: float = view_width - 300.0
-		var shed_full_cover: float = view_width - 180.0
-		var plant_x := plant.position.x
-		
-		if plant_x >= shed_full_cover:
-			# Fully under shed - very low light
-			plant.adjust_sunlight(0.10 - plant.sunlight_setting)
-		elif plant_x >= shed_left:
-			# Partially under awning - gradient from full sun to shade
-			var under_amount := (plant_x - shed_left) / (shed_full_cover - shed_left)
-			var target_sun: float = lerp(0.95, 0.10, under_amount)
-			plant.adjust_sunlight(target_sun - plant.sunlight_setting)
-		else:
-			# Fully in sun
-			plant.adjust_sunlight(0.95 - plant.sunlight_setting)
+	# Sunlight calculation removed - shed removed
 	
+	# Legacy stats tracking removed
 	if stats_label and plant and game_state == GameState.PLAYING:
 		var s := plant.get_status()
-		stats_label.text = "Stage: %s\nGrowth: %d%% (cap %d%%)\nBloom: %d%%\nMoisture: %d%%\nNutrients: %d%%\nSunlight: %d%% (ideal %d%%)\nWilted leaves: %d\nPot: %s" % [
-			s.get("stage", ""),
+		stats_label.text = "Growth: %d%% (cap %d%%)\nMoisture: %d%%\nNutrients: %d%%\nSunlight: %d%% (ideal %d%%)\nHealthy leaves: %d\nWilted leaves: %d" % [
 			round(s.get("growth", 0.0) * 100.0),
 			round(s.get("pot_cap", 0.0) * 100.0),
-			round(s.get("bloom", 0.0) * 100.0),
 			round(s.get("moisture", 0.0) * 100.0),
 			round(s.get("nutrients", 0.0) * 100.0),
 			round(s.get("sunlight", 0.0) * 100.0),
 			round(plant.ideal_sunlight * 100.0),
-			int(s.get("wilted", 0)),
-			_pot_name(int(s.get("pot_level", 0))),
+			plant.healthy_leaves,
+			plant.wilted_leaves
 		]
 		if sunlight_indicator:
 			sunlight_indicator.value = s.get("sunlight", 0.0) * 100.0
@@ -132,10 +122,22 @@ func _process(delta: float) -> void:
 		tree_click_timer -= delta
 		if tree_click_timer <= 0.0:
 			tree_click_count = 0
+	
+	# Left tree click timer decay (for practice ivy)
+	if left_tree_click_timer > 0.0:
+		left_tree_click_timer -= delta
+		if left_tree_click_timer <= 0.0:
+			left_tree_click_count = 0
+	
+	# Space press timer decay
+	if space_press_timer > 0.0:
+		space_press_timer -= delta
+		if space_press_timer <= 0.0:
+			space_press_count = 0
 
 	# Advance day/night cycle and update sky; global fast-forward via Engine.time_scale
 	var accel: bool = Input.is_key_pressed(KEY_QUOTELEFT)
-	Engine.time_scale = 10.0 if accel else 1.0
+	Engine.time_scale = 50.0 if accel else 1.0
 	cycle_time += delta
 	if cycle_time >= cycle_seconds:
 		cycle_time -= cycle_seconds
@@ -152,6 +154,26 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Menu state - handle left tree clicks for practice ivy
+	if game_state == GameState.MENU:
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			var mouse_pos := get_viewport().get_mouse_position()
+			var view := get_viewport_rect().size
+			var tree1_x: float = view.x * 0.12
+			var ground_y: float = view.y - ground_height
+			var left_tree_area := Rect2(tree1_x - 50.0, ground_y - 80.0, 100.0, 80.0)
+			
+			if left_tree_area.has_point(mouse_pos):
+				left_tree_click_count += 1
+				left_tree_click_timer = left_tree_click_window
+				if left_tree_click_count >= 5:
+					# Secret: 5 left tree clicks starts practice ivy
+					selected_flower_variant = "practice_ivy"
+					_on_flower_selected("practice_ivy")
+					left_tree_click_count = 0
+				return
+		return
+	
 	if game_state != GameState.PLAYING:
 		return
 	if plant == null:
@@ -197,6 +219,14 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed:
 		if event.keycode == KEY_ESCAPE and terminal_open:
 			_close_terminal()
+			return
+		# Secret space bar control for landscape/portrait toggle
+		if event.keycode == KEY_SPACE:
+			space_press_count += 1
+			space_press_timer = space_press_window
+			if space_press_count >= 5:
+				_toggle_orientation()
+				space_press_count = 0
 			return
 		match event.keycode:
 			KEY_1:
@@ -337,6 +367,17 @@ func _terminal_upgrade_pot() -> void:
 	if plant:
 		plant.repot()
 
+func _toggle_orientation() -> void:
+	# Toggle orientation - works on mobile devices
+	var current_orientation = DisplayServer.screen_get_orientation()
+	if current_orientation == DisplayServer.SCREEN_PORTRAIT:
+		DisplayServer.screen_set_orientation(DisplayServer.SCREEN_LANDSCAPE)
+	elif current_orientation == DisplayServer.SCREEN_LANDSCAPE:
+		DisplayServer.screen_set_orientation(DisplayServer.SCREEN_PORTRAIT)
+	else:
+		# Default to portrait if unknown
+		DisplayServer.screen_set_orientation(DisplayServer.SCREEN_PORTRAIT)
+
 func _build_menu() -> void:
 	menu_layer = CanvasLayer.new()
 	add_child(menu_layer)
@@ -460,7 +501,7 @@ func _build_menu() -> void:
 	
 	var collection_btn := Button.new()
 	collection_btn.text = "View Collection"
-	collection_btn.custom_minimum_size = Vector2(200.0, 40.0)
+	collection_btn.custom_minimum_size = Vector2(100.0, 40.0)
 	collection_btn.pressed.connect(_on_view_collection)
 	var spacer := Control.new()
 	spacer.custom_minimum_size = Vector2(0, 25)
@@ -701,12 +742,183 @@ func _build_scene() -> void:
 	var view := get_viewport_rect().size
 	plant.position = Vector2(view.x * 0.5, view.y - ground_height + 6.0)
 	add_child(plant)
-	# Add shed as a separate foreground node so it renders above the plant
-	var shed: Shed = Shed.new()
-	shed.ground_height = ground_height
-	shed.plant = plant
-	shed.z_index = plant.z_index + 1
-	add_child(shed)
+	# Shed removed
+
+func _draw_tree(view: Vector2, cycle_progress: float, sun_active: bool) -> void:
+	# Large decorative tree on right side, partially cut off at top
+	var ground_y: float = view.y - ground_height
+	var tree_x: float = view.x - 80.0
+	var tree_base_y: float = ground_y
+	
+	# Trunk - thick and tapered upward
+	var trunk_width_base: float = 60.0
+	var trunk_width_mid: float = 45.0
+	var trunk_width_top: float = 30.0
+	var trunk_height: float = 500.0
+	var trunk_color: Color = Color(0.45, 0.30, 0.15)
+	var trunk_dark: Color = Color(0.35, 0.22, 0.10)
+	
+	# Main trunk (tapered polygon)
+	var trunk_pts := PackedVector2Array([
+		Vector2(tree_x - trunk_width_base * 0.5, tree_base_y),
+		Vector2(tree_x + trunk_width_base * 0.5, tree_base_y),
+		Vector2(tree_x + trunk_width_top * 0.5, tree_base_y - trunk_height),
+		Vector2(tree_x - trunk_width_top * 0.5, tree_base_y - trunk_height),
+	])
+	draw_colored_polygon(trunk_pts, trunk_color)
+	
+	# Trunk shading on left side
+	var trunk_shade := PackedVector2Array([
+		Vector2(tree_x - trunk_width_base * 0.5, tree_base_y),
+		Vector2(tree_x - trunk_width_base * 0.5 + 15.0, tree_base_y),
+		Vector2(tree_x - trunk_width_top * 0.5 + 8.0, tree_base_y - trunk_height),
+		Vector2(tree_x - trunk_width_top * 0.5, tree_base_y - trunk_height),
+	])
+	draw_colored_polygon(trunk_shade, trunk_dark)
+	
+	# Main branches
+	var branch_color := Color(0.50, 0.32, 0.16)
+	var branch_dark := Color(0.38, 0.24, 0.12)
+	
+	# Right branch (large)
+	_draw_branch(
+		Vector2(tree_x + 20.0, tree_base_y - 150.0),
+		Vector2(tree_x + 200.0, tree_base_y - 280.0),
+		12.0, 8.0, branch_color, branch_dark
+	)
+	
+	# Right-upper branch
+	_draw_branch(
+		Vector2(tree_x + 10.0, tree_base_y - 280.0),
+		Vector2(tree_x + 180.0, tree_base_y - 400.0),
+		10.0, 6.0, branch_color, branch_dark
+	)
+	
+	# Left branch (medium)
+	_draw_branch(
+		Vector2(tree_x - 20.0, tree_base_y - 200.0),
+		Vector2(tree_x - 120.0, tree_base_y - 320.0),
+		11.0, 7.0, branch_color, branch_dark
+	)
+	
+	# Left-upper branch
+	_draw_branch(
+		Vector2(tree_x - 10.0, tree_base_y - 320.0),
+		Vector2(tree_x - 140.0, tree_base_y - 420.0),
+		9.0, 5.0, branch_color, branch_dark
+	)
+	
+	# Upper right branch
+	_draw_branch(
+		Vector2(tree_x + 5.0, tree_base_y - 400.0),
+		Vector2(tree_x + 150.0, tree_base_y - 520.0),
+		8.0, 5.0, branch_color, branch_dark
+	)
+	
+	# Foliage - large green leafy canopy with spherical shading
+	var foliage_color: Color = Color(0.28, 0.55, 0.25)
+	var foliage_dark: Color = Color(0.15, 0.32, 0.12)
+	var foliage_bright: Color = Color(0.60, 0.85, 0.50)
+	
+	# Calculate medium circle alpha - complex fading behavior
+	var medium_alpha: float = 1.0
+	var fade_in_window: float = 40.0 / 240.0  # 40 seconds to fade in
+	var fade_start: float = 5.0 / 240.0  # 5 seconds before cycle ends
+	var night_start: float = 0.5584
+	var night_one_third: float = 0.7056  # 1/3 through night (0.5584 + 0.4416/3)
+	var night_three_quarters: float = 0.8896  # 3/4 through night (0.5584 + 0.4416*3/4)
+	
+	if cycle_progress >= 0.0 and cycle_progress < fade_in_window:  # Fade in at start of day
+		medium_alpha = cycle_progress / fade_in_window
+	elif cycle_progress >= fade_in_window and cycle_progress < night_start:  # Day - full opacity
+		medium_alpha = 1.0
+	elif cycle_progress >= night_start and cycle_progress < night_one_third:  # After night starts, fade to half
+		medium_alpha = 1.0 - (cycle_progress - night_start) / (night_one_third - night_start) * 0.5
+	elif cycle_progress >= night_one_third and cycle_progress < night_three_quarters:  # 1/3 to 3/4 night - fade to zero
+		medium_alpha = 0.5 - (cycle_progress - night_one_third) / (night_three_quarters - night_one_third) * 0.5
+	else:  # From 3/4 night through end of cycle - stay invisible
+		medium_alpha = 0.0
+	
+
+	# Calculate highlight alpha based on cycle - fade during dusk/dawn, disappear at night
+	var highlight_alpha: float = 0.0
+	if cycle_progress >= 0.00417 and cycle_progress < 0.32077:  # Early morning fade-in (20x longer, ~76 seconds after sunrise)
+		var early_start := 0.00417
+		var early_end := 0.32077
+		highlight_alpha = (cycle_progress - early_start) / (early_end - early_start)
+	elif cycle_progress >= 0.32077 and cycle_progress < 0.4167:  # Day time - full highlight
+		highlight_alpha = 1.0
+	elif cycle_progress >= 0.4167 and cycle_progress <= 0.6584:  # Dusk to night window
+		var dusk_start := 0.4167
+		if cycle_progress < night_start:
+			# Fading during dusk (0.4167 to 0.5584)
+			highlight_alpha = 1.0 - (cycle_progress - dusk_start) / (night_start - dusk_start)
+		else:
+			# Night time - no highlight
+			highlight_alpha = 0.0
+	# No highlight during night (0.6584 to 0.00417 of next cycle)
+	
+	# Main canopy - large circle on right
+	_draw_foliage_sphere(Vector2(tree_x + 100.0, tree_base_y - 350.0), 140.0, foliage_color, foliage_dark, foliage_bright, cycle_progress, sun_active, highlight_alpha, medium_alpha)
+	
+	# Left side canopy
+	_draw_foliage_sphere(Vector2(tree_x - 90.0, tree_base_y - 320.0), 120.0, foliage_color, foliage_dark, foliage_bright, cycle_progress, sun_active, highlight_alpha, medium_alpha)
+	
+	# Upper canopy
+	_draw_foliage_sphere(Vector2(tree_x + 60.0, tree_base_y - 480.0), 100.0, foliage_color, foliage_dark, foliage_bright, cycle_progress, sun_active, highlight_alpha, medium_alpha)
+
+func _draw_branch(from: Vector2, to: Vector2, width_from: float, width_to: float, color: Color, shadow_color: Color) -> void:
+	# Draw a tapered branch with shading
+	var dir: Vector2 = (to - from).normalized()
+	var perp: Vector2 = Vector2(-dir.y, dir.x)
+	
+	# Main branch (tapered)
+	var branch_pts: PackedVector2Array = PackedVector2Array([
+		from + perp * width_from * 0.5,
+		from - perp * width_from * 0.5,
+		to - perp * width_to * 0.5,
+		to + perp * width_to * 0.5,
+	])
+	draw_colored_polygon(branch_pts, color)
+	
+	# Branch shadow on one side
+	var shadow_pts: PackedVector2Array = PackedVector2Array([
+		from - perp * width_from * 0.5,
+		from - perp * width_from * 0.5 + perp * 3.0,
+		to - perp * width_to * 0.5 + perp * 2.0,
+		to - perp * width_to * 0.5,
+	])
+	draw_colored_polygon(shadow_pts, shadow_color)
+
+func _draw_foliage_sphere(center: Vector2, radius: float, mid_color: Color, dark_color: Color, bright_color: Color, cycle_progress: float, sun_active: bool, highlight_alpha: float, medium_alpha: float) -> void:
+	# Draw spherical foliage with highlights that follow the day/night arc
+	# Highlight moves around sphere following sun/moon arc (0 = left, 0.5 = top, 1 = right)
+	
+	# Map cycle progress to arc angle around the sphere
+	# Day cycle goes from 0.0 (sunrise at left) through 0.5 (noon at top) to 1.0 (sunset at right)
+	# Highlight follows the sun arc across the sky
+	var arc_angle: float = cycle_progress * PI - PI  # Maps 0->-PI/PI (left) to 0.5->-PI/2 (top) to 1->0 (right)
+	var light_direction: Vector2 = Vector2(cos(arc_angle), sin(arc_angle))
+	
+	# Dark outer shadow - stationary at center
+	var dark_radius: float = radius * 1.15
+	draw_circle(center, dark_radius, dark_color)
+	
+	# Medium tone main sphere - positioned on edge of dark circle along arc
+	var dark_offset: Vector2 = light_direction * (dark_radius - radius)
+	var mid_center: Vector2 = center + dark_offset
+	var mid_col: Color = mid_color
+	mid_col.a = medium_alpha
+	draw_circle(mid_center, radius, mid_col)
+	
+	# Bright highlight near top, positioned on edge of medium circle along arc
+	# Only show if highlight_alpha > 0
+	if highlight_alpha > 0.01:
+		var highlight_radius: float = radius * 0.35
+		var highlight_offset: Vector2 = light_direction * (radius - highlight_radius)
+		var highlight_col: Color = bright_color
+		highlight_col.a = highlight_alpha
+		draw_circle(mid_center + highlight_offset, highlight_radius, highlight_col)
 
 func _build_ui() -> void:
 	var layer := CanvasLayer.new()
@@ -734,11 +946,6 @@ func _build_ui() -> void:
 	info_label.autowrap_mode = TextServer.AUTOWRAP_WORD
 	box.add_child(info_label)
 
-	action_hint = Label.new()
-	action_hint.text = "Current action: Water"
-	action_hint.autowrap_mode = TextServer.AUTOWRAP_WORD
-	box.add_child(action_hint)
-
 	var actions := HBoxContainer.new()
 	actions.add_theme_constant_override("separation", 6)
 	box.add_child(actions)
@@ -747,14 +954,12 @@ func _build_ui() -> void:
 	_add_action_button(actions, "Feed", Action.FEED)
 	_add_action_button(actions, "Prune", Action.PRUNE)
 	_add_action_button(actions, "Repot", Action.REPOT)
-	_update_action_hint()
 
 	# Music toggle button
 	var music_btn := Button.new()
 	music_btn.text = "Music: ON"
 	music_btn.pressed.connect(_toggle_music)
 	box.add_child(music_btn)
-	action_buttons["music"] = music_btn
 
 	# Return to menu button
 	var menu_btn := Button.new()
@@ -776,15 +981,15 @@ func _build_ui() -> void:
 	box.add_child(sunlight_indicator)
 
 func _draw() -> void:
-	var view := get_viewport_rect().size
+	var view: Vector2 = get_viewport_rect().size
 	# Sky
 	draw_rect(Rect2(Vector2(-24.0, -24.0), Vector2(view.x + 48.0, view.y + 48.0)), sky_color)
 	# Sun and moon
 	var p: float = cycle_time / cycle_seconds
-	var sun_pos := _sun_position(view, p)
-	var moon_pos := _moon_position(view, p)
-	var sun_col := Color(0.98, 0.90, 0.55)
-	var moon_col := Color(0.85, 0.88, 0.95)
+	var sun_pos: Vector2 = _sun_position(view, p)
+	var moon_pos: Vector2 = _moon_position(view, p)
+	var sun_col: Color = Color(0.98, 0.90, 0.55)
+	var moon_col: Color = Color(0.85, 0.88, 0.95)
 	var horizon: float = view.y - ground_height
 	var sun_active: bool = p >= 0.00 and p <= 0.58
 	var moon_active: bool = p >= 0.55 or p >= 0.95
@@ -803,6 +1008,9 @@ func _draw() -> void:
 	
 	# Scenery
 	_draw_scenery(view)
+	
+	# Decorative tree - pass cycle progress for arc-based lighting
+	_draw_tree(view, p, sun_active)
 	
 	# Critters
 	_draw_critters(view)
@@ -840,7 +1048,6 @@ func _set_action(action: int) -> void:
 	for key in action_buttons.keys():
 		if key is int:  # Only process integer action keys
 			action_buttons[key].button_pressed = key == current_action
-	_update_action_hint()
 	
 	# Set custom cursor based on action
 	if action in custom_cursors:
@@ -851,51 +1058,8 @@ func _set_action(action: int) -> void:
 func _on_action_button(action: int) -> void:
 	_set_action(action)
 
-func _draw_shed(view: Vector2) -> void:
-	# Minimal cozy shed: four wooden posts with a sloped roof (open sides)
-	var ground_y := view.y - ground_height
-	var canopy_right := view.x - 60.0
-	var canopy_left := canopy_right - 240.0
-	var post_height := 160.0
-	var roof_thickness := 10.0
-	
-	# Posts
-	var post_color := Color(0.45, 0.34, 0.24)
-	var post_w := 10.0
-	# Front-right, back-right, front-left, back-left posts
-	draw_rect(Rect2(canopy_right - post_w, ground_y - post_height, post_w, post_height), post_color)
-	draw_rect(Rect2(canopy_right - 80.0 - post_w, ground_y - post_height + 4.0, post_w, post_height - 4.0), post_color)
-	draw_rect(Rect2(canopy_left - post_w, ground_y - post_height + 8.0, post_w, post_height - 8.0), post_color)
-	draw_rect(Rect2(canopy_left + 80.0 - post_w, ground_y - post_height + 12.0, post_w, post_height - 12.0), post_color)
-	
-	# Sloped roof (downward to the left)
-	var roof_color := Color(0.58, 0.45, 0.32)
-	var roof_y_right := ground_y - post_height - 6.0
-	var roof_y_left := roof_y_right + 18.0
-	var roof_pts := PackedVector2Array([
-		Vector2(canopy_right, roof_y_right),
-		Vector2(canopy_left, roof_y_left),
-		Vector2(canopy_left, roof_y_left + roof_thickness),
-		Vector2(canopy_right, roof_y_right + roof_thickness)
-	])
-	draw_colored_polygon(roof_pts, roof_color)
-	
-	# Ground shadow under canopy
-	draw_rect(Rect2(canopy_left, ground_y - 10.0, canopy_right - canopy_left, 10.0), Color(0.0, 0.0, 0.0, 0.22))
 
 
-func _update_action_hint() -> void:
-	var name := ""
-	match current_action:
-		Action.WATER:
-			name = "Water"
-		Action.FEED:
-			name = "Feed nutrients"
-		Action.PRUNE:
-			name = "Click wilted leaves to prune"
-		Action.REPOT:
-			name = "Repot"
-	action_hint.text = "Current action: %s" % name
 
 func _apply_action_press() -> void:
 	if plant == null:
@@ -1382,10 +1546,6 @@ func _return_to_menu() -> void:
 	if plant:
 		plant.queue_free()
 		plant = null
-	# Remove shed (it's a child of Main)
-	for child in get_children():
-		if child.get_script() and child.get_script().resource_path.contains("Shed.gd"):
-			child.queue_free()
 	if ui_layer:
 		ui_layer.queue_free()
 		ui_layer = null

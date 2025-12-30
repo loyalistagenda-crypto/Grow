@@ -18,5 +18,6 @@ config/features=PackedStringArray("4.5")
 
 window/size/viewport_width=960
 window/size/viewport_height=540
+window/handheld/orientation=1
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"

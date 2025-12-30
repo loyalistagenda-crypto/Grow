@@ -41,6 +41,7 @@ var time_accum: float = 0.0
 var total_time: float = 0.0
 var bloom_progress: float = 0.0
 var wilted_leaves: int = 0
+var healthy_leaves: int = 0
 var pot_level: int = 0
 var wilt_accum: float = 0.0
 var splash_timer: float = 0.0
@@ -246,6 +247,15 @@ func _update_leaves(delta: float) -> void:
 		
 		# Update sway animation
 		leaf["sway_offset"] += delta
+	
+	# Count healthy and wilted leaves
+	healthy_leaves = 0
+	var wilted_count = 0
+	for leaf: Dictionary in leaves:
+		if leaf["state"] == "healthy":
+			healthy_leaves += 1
+		elif leaf["state"] in ["wilting", "brown"]:
+			wilted_count += 1
 
 func _update_fallen_leaves(delta: float) -> void:
 	# Update fallen leaves on ground
