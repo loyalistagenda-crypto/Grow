@@ -1,14 +1,21 @@
 extends Node2D
 
+const MusicDatabase = preload("res://scripts/MusicDatabase.gd")
+
 var plant: Plant
 var info_label: Label
 var stats_label: Label
 var sunlight_indicator: ProgressBar
+var stats_container: VBoxContainer
+var stat_rows: Dictionary = {}
+var healthy_label: Label
+var wilted_label: Label
 var ground_height: float = 120.0
 var sky_color: Color = Color(0.36, 0.48, 0.72)
 var ground_color: Color = Color(0.12, 0.30, 0.14)
 var action_buttons: Dictionary = {}
 var ui_layer: CanvasLayer
+var game_menu_layer: CanvasLayer
 var drag_active: bool = false
 var drag_button: int = -1
 var pot_dragging: bool = false
@@ -44,7 +51,26 @@ var drag_water_rate: float = 0.55
 var drag_feed_rate: float = 0.35
 var music_player: AudioStreamPlayer
 var music_muted: bool = false
+var music_volume_db: float = -5.0
+var music_speed: float = 1.0
+var music_track: String = "default"
+var music_bass_db: float = 0.0
+var music_bus_index: int = -1
+var music_eq_effect: AudioEffectEQ6
 var custom_cursors: Dictionary = {}
+
+var interface_settings := {
+	"growth_percent": true,
+	"growth_bar": false,
+	"moisture_percent": true,
+	"moisture_bar": false,
+	"nutrients_percent": true,
+	"nutrients_bar": false,
+	"sunlight_percent": true,
+	"sunlight_bar": true,
+	"show_healthy": true,
+	"show_wilted": true,
+}
 
 # Day/Night cycle
 @export var cycle_seconds: float = 240.0
@@ -98,20 +124,9 @@ func _process(delta: float) -> void:
 	# Sunlight calculation removed - shed removed
 	
 	# Legacy stats tracking removed
-	if stats_label and plant and game_state == GameState.PLAYING:
+	if plant and game_state == GameState.PLAYING:
 		var s := plant.get_status()
-		stats_label.text = "Growth: %d%% (cap %d%%)\nMoisture: %d%%\nNutrients: %d%%\nSunlight: %d%% (ideal %d%%)\nHealthy leaves: %d\nWilted leaves: %d" % [
-			round(s.get("growth", 0.0) * 100.0),
-			round(s.get("pot_cap", 0.0) * 100.0),
-			round(s.get("moisture", 0.0) * 100.0),
-			round(s.get("nutrients", 0.0) * 100.0),
-			round(s.get("sunlight", 0.0) * 100.0),
-			round(plant.ideal_sunlight * 100.0),
-			plant.healthy_leaves,
-			plant.wilted_leaves
-		]
-		if sunlight_indicator:
-			sunlight_indicator.value = s.get("sunlight", 0.0) * 100.0
+		_update_stats_ui(s)
 	if drag_active and plant and game_state == GameState.PLAYING:
 		# Only apply draggable actions during drag
 		if current_action == Action.WATER or current_action == Action.FEED:
@@ -750,13 +765,31 @@ func _draw_tree(view: Vector2, cycle_progress: float, sun_active: bool) -> void:
 	var tree_x: float = view.x - 80.0
 	var tree_base_y: float = ground_y
 	
+	# Calculate color adjustments based on time of day
+	var trunk_color: Color = Color(0.45, 0.30, 0.15)
+	var trunk_dark: Color = Color(0.35, 0.22, 0.10)
+	if cycle_progress >= 0.4167 and cycle_progress < 0.5584:  # Dusk - warmer and less saturated
+		var dusk_progress: float = (cycle_progress - 0.4167) / (0.5584 - 0.4167)
+		trunk_color = _adjust_color_warm_desaturate(trunk_color, dusk_progress * 0.3, dusk_progress * 0.2)
+		trunk_dark = _adjust_color_warm_desaturate(trunk_dark, dusk_progress * 0.3, dusk_progress * 0.2)
+	elif cycle_progress >= 0.5584 and cycle_progress < 0.95:  # Night - cooler and less saturated
+		trunk_color = _adjust_color_cool_desaturate(trunk_color, 0.3, 0.5)
+		trunk_dark = _adjust_color_cool_desaturate(trunk_dark, 0.3, 0.5)
+	elif cycle_progress >= 0.95 or cycle_progress < 0.02:  # Dawn transition back to normal
+		if cycle_progress >= 0.95:
+			var dawn_progress: float = (cycle_progress - 0.95) / (1.0 - 0.95)
+			trunk_color = _adjust_color_cool_desaturate(trunk_color, 0.3 * (1.0 - dawn_progress), 0.5 * (1.0 - dawn_progress))
+			trunk_dark = _adjust_color_cool_desaturate(trunk_dark, 0.3 * (1.0 - dawn_progress), 0.5 * (1.0 - dawn_progress))
+		elif cycle_progress < 0.02:
+			var early_dawn_progress: float = cycle_progress / 0.02
+			trunk_color = _adjust_color_cool_desaturate(trunk_color, 0.3 * (1.0 - early_dawn_progress), 0.5 * (1.0 - early_dawn_progress))
+			trunk_dark = _adjust_color_cool_desaturate(trunk_dark, 0.3 * (1.0 - early_dawn_progress), 0.5 * (1.0 - early_dawn_progress))
+	
 	# Trunk - thick and tapered upward
 	var trunk_width_base: float = 60.0
 	var trunk_width_mid: float = 45.0
 	var trunk_width_top: float = 30.0
 	var trunk_height: float = 500.0
-	var trunk_color: Color = Color(0.45, 0.30, 0.15)
-	var trunk_dark: Color = Color(0.35, 0.22, 0.10)
 	
 	# Main trunk (tapered polygon)
 	var trunk_pts := PackedVector2Array([
@@ -777,8 +810,26 @@ func _draw_tree(view: Vector2, cycle_progress: float, sun_active: bool) -> void:
 	draw_colored_polygon(trunk_shade, trunk_dark)
 	
 	# Main branches
-	var branch_color := Color(0.50, 0.32, 0.16)
-	var branch_dark := Color(0.38, 0.24, 0.12)
+	var branch_color: Color = Color(0.50, 0.32, 0.16)
+	var branch_dark: Color = Color(0.38, 0.24, 0.12)
+	
+	# Apply color adjustments to branches based on time of day
+	if cycle_progress >= 0.4167 and cycle_progress < 0.5584:  # Dusk - warmer and less saturated
+		var dusk_progress: float = (cycle_progress - 0.4167) / (0.5584 - 0.4167)
+		branch_color = _adjust_color_warm_desaturate(branch_color, dusk_progress * 0.3, dusk_progress * 0.2)
+		branch_dark = _adjust_color_warm_desaturate(branch_dark, dusk_progress * 0.3, dusk_progress * 0.2)
+	elif cycle_progress >= 0.5584 and cycle_progress < 0.95:  # Night - cooler and less saturated
+		branch_color = _adjust_color_cool_desaturate(branch_color, 0.3, 0.5)
+		branch_dark = _adjust_color_cool_desaturate(branch_dark, 0.3, 0.5)
+	elif cycle_progress >= 0.95 or cycle_progress < 0.02:  # Dawn transition back to normal
+		if cycle_progress >= 0.95:
+			var dawn_progress: float = (cycle_progress - 0.95) / (1.0 - 0.95)
+			branch_color = _adjust_color_cool_desaturate(branch_color, 0.3 * (1.0 - dawn_progress), 0.5 * (1.0 - dawn_progress))
+			branch_dark = _adjust_color_cool_desaturate(branch_dark, 0.3 * (1.0 - dawn_progress), 0.5 * (1.0 - dawn_progress))
+		elif cycle_progress < 0.02:
+			var early_dawn_progress: float = cycle_progress / 0.02
+			branch_color = _adjust_color_cool_desaturate(branch_color, 0.3 * (1.0 - early_dawn_progress), 0.5 * (1.0 - early_dawn_progress))
+			branch_dark = _adjust_color_cool_desaturate(branch_dark, 0.3 * (1.0 - early_dawn_progress), 0.5 * (1.0 - early_dawn_progress))
 	
 	# Right branch (large)
 	_draw_branch(
@@ -819,6 +870,28 @@ func _draw_tree(view: Vector2, cycle_progress: float, sun_active: bool) -> void:
 	var foliage_color: Color = Color(0.28, 0.55, 0.25)
 	var foliage_dark: Color = Color(0.15, 0.32, 0.12)
 	var foliage_bright: Color = Color(0.60, 0.85, 0.50)
+	
+	# Apply color adjustments to foliage based on time of day
+	if cycle_progress >= 0.4167 and cycle_progress < 0.5584:  # Dusk - warmer and less saturated
+		var dusk_progress: float = (cycle_progress - 0.4167) / (0.5584 - 0.4167)
+		foliage_color = _adjust_color_warm_desaturate(foliage_color, dusk_progress * 0.3, dusk_progress * 0.2)
+		foliage_dark = _adjust_color_warm_desaturate(foliage_dark, dusk_progress * 0.3, dusk_progress * 0.2)
+		foliage_bright = _adjust_color_warm_desaturate(foliage_bright, dusk_progress * 0.3, dusk_progress * 0.2)
+	elif cycle_progress >= 0.5584 and cycle_progress < 0.95:  # Night - cooler and less saturated
+		foliage_color = _adjust_color_cool_desaturate(foliage_color, 0.3, 0.5)
+		foliage_dark = _adjust_color_cool_desaturate(foliage_dark, 0.3, 0.5)
+		foliage_bright = _adjust_color_cool_desaturate(foliage_bright, 0.3, 0.5)
+	elif cycle_progress >= 0.95 or cycle_progress < 0.02:  # Dawn transition back to normal
+		if cycle_progress >= 0.95:
+			var dawn_progress: float = (cycle_progress - 0.95) / (1.0 - 0.95)
+			foliage_color = _adjust_color_cool_desaturate(foliage_color, 0.3 * (1.0 - dawn_progress), 0.5 * (1.0 - dawn_progress))
+			foliage_dark = _adjust_color_cool_desaturate(foliage_dark, 0.3 * (1.0 - dawn_progress), 0.5 * (1.0 - dawn_progress))
+			foliage_bright = _adjust_color_cool_desaturate(foliage_bright, 0.3 * (1.0 - dawn_progress), 0.5 * (1.0 - dawn_progress))
+		elif cycle_progress < 0.02:
+			var early_dawn_progress: float = cycle_progress / 0.02
+			foliage_color = _adjust_color_cool_desaturate(foliage_color, 0.3 * (1.0 - early_dawn_progress), 0.5 * (1.0 - early_dawn_progress))
+			foliage_dark = _adjust_color_cool_desaturate(foliage_dark, 0.3 * (1.0 - early_dawn_progress), 0.5 * (1.0 - early_dawn_progress))
+			foliage_bright = _adjust_color_cool_desaturate(foliage_bright, 0.3 * (1.0 - early_dawn_progress), 0.5 * (1.0 - early_dawn_progress))
 	
 	# Calculate medium circle alpha - complex fading behavior
 	var medium_alpha: float = 1.0
@@ -961,24 +1034,340 @@ func _build_ui() -> void:
 	music_btn.pressed.connect(_toggle_music)
 	box.add_child(music_btn)
 
-	# Return to menu button
+	# Menu button opens in-game menu overlay
 	var menu_btn := Button.new()
-	menu_btn.text = "Return to Menu"
-	menu_btn.pressed.connect(_return_to_menu)
+	menu_btn.text = "Menu"
+	menu_btn.pressed.connect(_open_game_menu)
 	box.add_child(menu_btn)
 
-	stats_label = Label.new()
-	stats_label.text = "Growth: 0%\nMoisture: 0%"
-	stats_label.autowrap_mode = TextServer.AUTOWRAP_WORD
-	box.add_child(stats_label)
+	_build_stats_ui(box)
 
-	sunlight_indicator = ProgressBar.new()
-	sunlight_indicator.min_value = 0.0
-	sunlight_indicator.max_value = 100.0
-	sunlight_indicator.value = plant.sunlight_setting * 100.0
-	sunlight_indicator.custom_minimum_size = Vector2(260.0, 10.0)
-	sunlight_indicator.show_percentage = false
-	box.add_child(sunlight_indicator)
+func _build_stats_ui(parent: VBoxContainer) -> void:
+	stats_container = VBoxContainer.new()
+	stats_container.add_theme_constant_override("separation", 6)
+	parent.add_child(stats_container)
+
+	var header := Label.new()
+	header.text = "Plant Status"
+	header.add_theme_font_size_override("font_size", 18)
+	stats_container.add_child(header)
+
+	_create_stat_row("growth", "Growth")
+	_create_stat_row("moisture", "Moisture")
+	_create_stat_row("nutrients", "Nutrients")
+	_create_stat_row("sunlight", "Sunlight")
+
+	healthy_label = Label.new()
+	healthy_label.text = "Healthy leaves: 0"
+	stats_container.add_child(healthy_label)
+
+	wilted_label = Label.new()
+	wilted_label.text = "Wilted leaves: 0"
+	stats_container.add_child(wilted_label)
+
+	_refresh_interface_visibility()
+
+func _create_stat_row(key: String, title: String) -> void:
+	var row := VBoxContainer.new()
+	row.add_theme_constant_override("separation", 2)
+	stats_container.add_child(row)
+
+	var percent := Label.new()
+	percent.text = "%s: 0%%" % title
+	row.add_child(percent)
+
+	var bar := ProgressBar.new()
+	bar.min_value = 0.0
+	bar.max_value = 100.0
+	bar.value = 0.0
+	bar.custom_minimum_size = Vector2(260.0, 10.0)
+	bar.show_percentage = false
+	row.add_child(bar)
+
+	stat_rows[key] = {
+		"percent_label": percent,
+		"bar": bar,
+		"title": title,
+	}
+	if key == "sunlight":
+		sunlight_indicator = bar
+
+func _update_stats_ui(status: Dictionary) -> void:
+	_set_stat_value("growth", status.get("growth", 0.0), status.get("pot_cap", 1.0), plant.ideal_sunlight)
+	_set_stat_value("moisture", status.get("moisture", 0.0))
+	_set_stat_value("nutrients", status.get("nutrients", 0.0))
+	_set_stat_value("sunlight", status.get("sunlight", 0.0), status.get("pot_cap", 1.0), plant.ideal_sunlight)
+	if healthy_label:
+		healthy_label.text = "Healthy leaves: %d" % plant.healthy_leaves
+	if wilted_label:
+		wilted_label.text = "Wilted leaves: %d" % plant.wilted_leaves
+	_refresh_interface_visibility()
+
+func _set_stat_value(key: String, value: float, cap: float = -1.0, ideal: float = -1.0) -> void:
+	var entry: Dictionary = stat_rows.get(key, {})
+	if entry.is_empty():
+		return
+	var pct := int(round(value * 100.0))
+	var label_text := "%s: %d%%" % [entry.get("title", "Stat"), pct]
+	if key == "growth":
+		var cap_pct := int(round(cap * 100.0))
+		label_text = "Growth: %d%% (cap %d%%)" % [pct, cap_pct]
+	elif key == "sunlight":
+		var ideal_pct := int(round(ideal * 100.0))
+		label_text = "Sunlight: %d%% (ideal %d%%)" % [pct, ideal_pct]
+
+	var percent_label: Label = entry.get("percent_label")
+	if percent_label:
+		percent_label.text = label_text
+		percent_label.visible = interface_settings.get("%s_percent" % key, true)
+
+	var bar: ProgressBar = entry.get("bar")
+	if bar:
+		bar.value = pct
+		bar.visible = interface_settings.get("%s_bar" % key, false)
+
+func _refresh_interface_visibility() -> void:
+	for key in ["growth", "moisture", "nutrients", "sunlight"]:
+		var entry: Dictionary = stat_rows.get(key, {})
+		if entry.is_empty():
+			continue
+		var percent_label: Label = entry.get("percent_label")
+		if percent_label:
+			percent_label.visible = interface_settings.get("%s_percent" % key, true)
+		var bar: ProgressBar = entry.get("bar")
+		if bar:
+			bar.visible = interface_settings.get("%s_bar" % key, false)
+	if healthy_label:
+		healthy_label.visible = interface_settings.get("show_healthy", true)
+	if wilted_label:
+		wilted_label.visible = interface_settings.get("show_wilted", true)
+
+func _open_game_menu() -> void:
+	if game_menu_layer:
+		return
+	if game_state != GameState.PLAYING:
+		return
+	game_menu_layer = CanvasLayer.new()
+	add_child(game_menu_layer)
+
+	var bg := ColorRect.new()
+	bg.color = Color(0.0, 0.0, 0.0, 0.55)
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_STOP
+	game_menu_layer.add_child(bg)
+
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	panel.offset_left = -320.0
+	panel.offset_right = 320.0
+	panel.offset_top = -260.0
+	panel.offset_bottom = 260.0
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.12, 0.10, 0.08, 0.92)
+	panel_style.border_color = Color(0.35, 0.28, 0.20)
+	panel_style.border_width_left = 2
+	panel_style.border_width_right = 2
+	panel_style.border_width_top = 2
+	panel_style.border_width_bottom = 2
+	panel_style.corner_radius_top_left = 12
+	panel_style.corner_radius_top_right = 12
+	panel_style.corner_radius_bottom_left = 12
+	panel_style.corner_radius_bottom_right = 12
+	panel.add_theme_stylebox_override("panel", panel_style)
+	game_menu_layer.add_child(panel)
+
+	var padding := MarginContainer.new()
+	padding.add_theme_constant_override("margin_left", 18)
+	padding.add_theme_constant_override("margin_right", 18)
+	padding.add_theme_constant_override("margin_top", 18)
+	padding.add_theme_constant_override("margin_bottom", 18)
+	panel.add_child(padding)
+
+	var root := VBoxContainer.new()
+	root.add_theme_constant_override("separation", 12)
+	padding.add_child(root)
+
+	var title := Label.new()
+	title.text = "Game Menu"
+	title.add_theme_font_size_override("font_size", 28)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	root.add_child(title)
+
+	var start_btn := Button.new()
+	start_btn.text = "Start Screen"
+	start_btn.custom_minimum_size = Vector2(0.0, 44.0)
+	start_btn.pressed.connect(_on_start_screen_pressed)
+	root.add_child(start_btn)
+
+	root.add_child(HSeparator.new())
+
+	var audio_header := Label.new()
+	audio_header.text = "Audio Settings"
+	audio_header.add_theme_font_size_override("font_size", 20)
+	root.add_child(audio_header)
+
+	var volume_row := HBoxContainer.new()
+	volume_row.add_theme_constant_override("separation", 8)
+	root.add_child(volume_row)
+
+	var volume_label := Label.new()
+	volume_label.text = "Volume"
+	volume_row.add_child(volume_label)
+
+	var volume_slider := HSlider.new()
+	volume_slider.min_value = -30.0
+	volume_slider.max_value = 6.0
+	volume_slider.step = 0.5
+	volume_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	volume_slider.value = music_volume_db
+	volume_row.add_child(volume_slider)
+
+	var volume_value := Label.new()
+	volume_value.text = _format_db(music_volume_db)
+	volume_row.add_child(volume_value)
+	volume_slider.value_changed.connect(Callable(self, "_on_volume_changed").bind(volume_value))
+
+	var speed_row := HBoxContainer.new()
+	speed_row.add_theme_constant_override("separation", 8)
+	root.add_child(speed_row)
+
+	var speed_label := Label.new()
+	speed_label.text = "Speed"
+	speed_row.add_child(speed_label)
+
+	var speed_slider := HSlider.new()
+	speed_slider.min_value = 0.5
+	speed_slider.max_value = 1.5
+	speed_slider.step = 0.05
+	speed_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	speed_slider.value = music_speed
+	speed_row.add_child(speed_slider)
+
+	var speed_value := Label.new()
+	speed_value.text = _format_speed(music_speed)
+	speed_row.add_child(speed_value)
+	speed_slider.value_changed.connect(Callable(self, "_on_speed_changed").bind(speed_value))
+
+	var bass_row := HBoxContainer.new()
+	bass_row.add_theme_constant_override("separation", 8)
+	root.add_child(bass_row)
+
+	var bass_label := Label.new()
+	bass_label.text = "Bass"
+	bass_row.add_child(bass_label)
+
+	var bass_slider := HSlider.new()
+	bass_slider.min_value = -12.0
+	bass_slider.max_value = 12.0
+	bass_slider.step = 0.5
+	bass_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bass_slider.value = music_bass_db
+	bass_row.add_child(bass_slider)
+
+	var bass_value := Label.new()
+	bass_value.text = _format_db(music_bass_db)
+	bass_row.add_child(bass_value)
+	bass_slider.value_changed.connect(Callable(self, "_on_bass_changed").bind(bass_value))
+
+	var track_row := HBoxContainer.new()
+	track_row.add_theme_constant_override("separation", 8)
+	root.add_child(track_row)
+
+	var track_label := Label.new()
+	track_label.text = "Track"
+	track_row.add_child(track_label)
+
+	var track_select := OptionButton.new()
+	track_select.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var tracks := MusicDatabase.list_tracks()
+	if tracks.is_empty():
+		tracks = [music_track]
+	for i in range(tracks.size()):
+		var track_name: String = String(tracks[i])
+		track_select.add_item(track_name.capitalize(), i)
+		track_select.set_item_metadata(i, track_name)
+		if track_name == music_track:
+			track_select.select(i)
+	track_row.add_child(track_select)
+	track_select.item_selected.connect(Callable(self, "_on_track_selected").bind(track_select))
+
+	root.add_child(HSeparator.new())
+
+	var interface_header := Label.new()
+	interface_header.text = "Interface Settings"
+	interface_header.add_theme_font_size_override("font_size", 20)
+	root.add_child(interface_header)
+
+	var interface_grid := GridContainer.new()
+	interface_grid.columns = 2
+	interface_grid.add_theme_constant_override("h_separation", 10)
+	interface_grid.add_theme_constant_override("v_separation", 6)
+	root.add_child(interface_grid)
+
+	_add_interface_toggle(interface_grid, "Growth: show percent", "growth_percent")
+	_add_interface_toggle(interface_grid, "Growth: show bar", "growth_bar")
+	_add_interface_toggle(interface_grid, "Moisture: show percent", "moisture_percent")
+	_add_interface_toggle(interface_grid, "Moisture: show bar", "moisture_bar")
+	_add_interface_toggle(interface_grid, "Nutrients: show percent", "nutrients_percent")
+	_add_interface_toggle(interface_grid, "Nutrients: show bar", "nutrients_bar")
+	_add_interface_toggle(interface_grid, "Sunlight: show percent", "sunlight_percent")
+	_add_interface_toggle(interface_grid, "Sunlight: show bar", "sunlight_bar")
+	_add_interface_toggle(interface_grid, "Display healthy leaves", "show_healthy")
+	_add_interface_toggle(interface_grid, "Display wilted leaves", "show_wilted")
+
+	var close_btn := Button.new()
+	close_btn.text = "Close"
+	close_btn.custom_minimum_size = Vector2(0.0, 40.0)
+	close_btn.pressed.connect(_close_game_menu)
+	root.add_child(close_btn)
+
+func _close_game_menu() -> void:
+	if game_menu_layer:
+		game_menu_layer.queue_free()
+		game_menu_layer = null
+
+func _on_start_screen_pressed() -> void:
+	_close_game_menu()
+	_return_to_menu()
+
+func _on_volume_changed(value: float, value_label: Label) -> void:
+	music_volume_db = value
+	value_label.text = _format_db(value)
+	_apply_audio_settings()
+
+func _on_speed_changed(value: float, value_label: Label) -> void:
+	music_speed = value
+	value_label.text = _format_speed(value)
+	_apply_audio_settings()
+
+func _on_bass_changed(value: float, value_label: Label) -> void:
+	music_bass_db = value
+	value_label.text = _format_db(value)
+	_apply_audio_settings()
+
+func _on_track_selected(index: int, dropdown: OptionButton) -> void:
+	var meta = dropdown.get_item_metadata(index)
+	var selected_name := String(meta if meta != null else dropdown.get_item_text(index).to_lower())
+	_load_track(selected_name)
+
+func _add_interface_toggle(container: Container, label: String, key: String) -> void:
+	var box := CheckBox.new()
+	box.text = label
+	box.button_pressed = interface_settings.get(key, true)
+	box.toggled.connect(Callable(self, "_on_interface_toggle").bind(key))
+	container.add_child(box)
+
+func _on_interface_toggle(pressed: bool, key: String) -> void:
+	interface_settings[key] = pressed
+	_refresh_interface_visibility()
+	if plant and game_state == GameState.PLAYING:
+		_update_stats_ui(plant.get_status())
+
+func _format_db(value: float) -> String:
+	return "%0.1f dB" % value
+
+func _format_speed(value: float) -> String:
+	return "%0.2fx" % value
 
 func _draw() -> void:
 	var view: Vector2 = get_viewport_rect().size
@@ -1007,7 +1396,22 @@ func _draw() -> void:
 	_draw_shooting_stars()
 	
 	# Scenery
-	_draw_scenery(view)
+	_draw_scenery(view, p)
+	
+	# Calculate color adjustments for ground and trees based on time of day
+	var adjusted_ground_color: Color = ground_color
+	if p >= 0.4167 and p < 0.5584:  # Dusk - 30% warmer, 20% less saturated
+		var dusk_progress: float = (p - 0.4167) / (0.5584 - 0.4167)
+		adjusted_ground_color = _adjust_color_warm_desaturate(ground_color, dusk_progress * 0.3, dusk_progress * 0.2)
+	elif p >= 0.5584 and p < 0.95:  # Night - 30% less saturated, 50% cooler (bluer)
+		adjusted_ground_color = _adjust_color_cool_desaturate(ground_color, 0.3, 0.5)
+	elif p >= 0.95 or p < 0.02:  # Dawn/night transition
+		if p >= 0.95:
+			var dawn_progress: float = (p - 0.95) / (1.0 - 0.95)
+			adjusted_ground_color = _adjust_color_cool_desaturate(ground_color, 0.3 * (1.0 - dawn_progress), 0.5 * (1.0 - dawn_progress))
+		elif p < 0.02:
+			var early_dawn_progress: float = p / 0.02
+			adjusted_ground_color = _adjust_color_cool_desaturate(ground_color, 0.3 * (1.0 - early_dawn_progress), 0.5 * (1.0 - early_dawn_progress))
 	
 	# Decorative tree - pass cycle progress for arc-based lighting
 	_draw_tree(view, p, sun_active)
@@ -1016,8 +1420,34 @@ func _draw() -> void:
 	_draw_critters(view)
 	
 	# Ground
-	draw_rect(Rect2(Vector2(-24.0, view.y - ground_height), Vector2(view.x + 48.0, ground_height + 32.0)), ground_color)
+	draw_rect(Rect2(Vector2(-24.0, view.y - ground_height), Vector2(view.x + 48.0, ground_height + 32.0)), adjusted_ground_color)
 
+
+func _adjust_color_warm_desaturate(color: Color, warmth_amount: float, desaturate_amount: float) -> Color:
+	# Make color warmer (more red/orange) and less saturated
+	var result: Color = color
+	# Add warmth by increasing red slightly and reducing blue
+	result.r = minf(1.0, result.r + warmth_amount * 0.2)
+	result.b = maxf(0.0, result.b - warmth_amount * 0.15)
+	# Desaturate by blending towards gray
+	var gray: float = (result.r + result.g + result.b) / 3.0
+	result.r = lerpf(result.r, gray, desaturate_amount)
+	result.g = lerpf(result.g, gray, desaturate_amount)
+	result.b = lerpf(result.b, gray, desaturate_amount)
+	return result
+
+func _adjust_color_cool_desaturate(color: Color, desaturate_amount: float, cool_amount: float) -> Color:
+	# Make color cooler (more blue) and less saturated
+	var result: Color = color
+	# Add coolness by increasing blue and reducing red
+	result.b = minf(1.0, result.b + cool_amount * 0.3)
+	result.r = maxf(0.0, result.r - cool_amount * 0.2)
+	# Desaturate by blending towards gray
+	var gray: float = (result.r + result.g + result.b) / 3.0
+	result.r = lerpf(result.r, gray, desaturate_amount)
+	result.g = lerpf(result.g, gray, desaturate_amount)
+	result.b = lerpf(result.b, gray, desaturate_amount)
+	return result
 
 func _on_size_changed() -> void:
 	if plant:
@@ -1279,17 +1709,17 @@ func _update_critters(delta: float) -> void:
 		else:
 			i += 1
 
-func _draw_scenery(view: Vector2) -> void:
+func _draw_scenery(view: Vector2, cycle_progress: float) -> void:
 	# Draw moving clouds
-	var cloud_col := Color(1.0, 1.0, 1.0, 0.7)
+	var cloud_col: Color = Color(1.0, 1.0, 1.0, 0.7)
 	for cloud in clouds:
 		var scale: float = cloud.size_scale
 		var base_x: float = cloud.x
 		var base_y: float = cloud.y
 		# Three overlapping semi-circles for fluffy cloud effect
-		var r1 := 16.0 * scale
-		var r2 := 20.0 * scale
-		var r3 := 14.0 * scale
+		var r1: float = 16.0 * scale
+		var r2: float = 20.0 * scale
+		var r3: float = 14.0 * scale
 		draw_arc(Vector2(base_x - 12.0 * scale, base_y), r1, PI, TAU, 32, cloud_col, r1 * 0.9, true)
 		draw_arc(Vector2(base_x + 3.0 * scale, base_y - 4.0 * scale), r2, PI, TAU, 32, cloud_col, r2 * 0.9, true)
 		draw_arc(Vector2(base_x + 18.0 * scale, base_y), r3, PI, TAU, 32, cloud_col, r3 * 0.9, true)
@@ -1297,17 +1727,44 @@ func _draw_scenery(view: Vector2) -> void:
 	# Tree clusters
 	var ground_y: float = view.y - ground_height
 	
+	# Calculate color adjustments for scenery trees based on time of day
+	var trunk_col: Color = Color(0.35, 0.25, 0.18)
+	var foliage_dark: Color = Color(0.15, 0.40, 0.18)
+	var foliage_mid: Color = Color(0.20, 0.50, 0.22)
+	var foliage_light: Color = Color(0.25, 0.58, 0.28)
+	
+	if cycle_progress >= 0.4167 and cycle_progress < 0.5584:  # Dusk - warmer and less saturated
+		var dusk_progress: float = (cycle_progress - 0.4167) / (0.5584 - 0.4167)
+		trunk_col = _adjust_color_warm_desaturate(trunk_col, dusk_progress * 0.3, dusk_progress * 0.2)
+		foliage_dark = _adjust_color_warm_desaturate(foliage_dark, dusk_progress * 0.3, dusk_progress * 0.2)
+		foliage_mid = _adjust_color_warm_desaturate(foliage_mid, dusk_progress * 0.3, dusk_progress * 0.2)
+		foliage_light = _adjust_color_warm_desaturate(foliage_light, dusk_progress * 0.3, dusk_progress * 0.2)
+	elif cycle_progress >= 0.5584 and cycle_progress < 0.95:  # Night - cooler and less saturated
+		trunk_col = _adjust_color_cool_desaturate(trunk_col, 0.3, 0.5)
+		foliage_dark = _adjust_color_cool_desaturate(foliage_dark, 0.3, 0.5)
+		foliage_mid = _adjust_color_cool_desaturate(foliage_mid, 0.3, 0.5)
+		foliage_light = _adjust_color_cool_desaturate(foliage_light, 0.3, 0.5)
+	elif cycle_progress >= 0.95 or cycle_progress < 0.02:  # Dawn transition back to normal
+		if cycle_progress >= 0.95:
+			var dawn_progress: float = (cycle_progress - 0.95) / (1.0 - 0.95)
+			trunk_col = _adjust_color_cool_desaturate(trunk_col, 0.3 * (1.0 - dawn_progress), 0.5 * (1.0 - dawn_progress))
+			foliage_dark = _adjust_color_cool_desaturate(foliage_dark, 0.3 * (1.0 - dawn_progress), 0.5 * (1.0 - dawn_progress))
+			foliage_mid = _adjust_color_cool_desaturate(foliage_mid, 0.3 * (1.0 - dawn_progress), 0.5 * (1.0 - dawn_progress))
+			foliage_light = _adjust_color_cool_desaturate(foliage_light, 0.3 * (1.0 - dawn_progress), 0.5 * (1.0 - dawn_progress))
+		elif cycle_progress < 0.02:
+			var early_dawn_progress: float = cycle_progress / 0.02
+			trunk_col = _adjust_color_cool_desaturate(trunk_col, 0.3 * (1.0 - early_dawn_progress), 0.5 * (1.0 - early_dawn_progress))
+			foliage_dark = _adjust_color_cool_desaturate(foliage_dark, 0.3 * (1.0 - early_dawn_progress), 0.5 * (1.0 - early_dawn_progress))
+			foliage_mid = _adjust_color_cool_desaturate(foliage_mid, 0.3 * (1.0 - early_dawn_progress), 0.5 * (1.0 - early_dawn_progress))
+			foliage_light = _adjust_color_cool_desaturate(foliage_light, 0.3 * (1.0 - early_dawn_progress), 0.5 * (1.0 - early_dawn_progress))
+	
 	# Left tree cluster
 	var tree1_x: float = view.x * 0.12
 	# Trunks
-	var trunk_col := Color(0.35, 0.25, 0.18)
 	draw_rect(Rect2(tree1_x - 6.0, ground_y - 45.0, 12.0, 45.0), trunk_col)
 	draw_rect(Rect2(tree1_x + 25.0, ground_y - 38.0, 10.0, 38.0), trunk_col)
 	draw_rect(Rect2(tree1_x - 28.0, ground_y - 40.0, 11.0, 40.0), trunk_col)
 	# Foliage layers
-	var foliage_dark := Color(0.15, 0.40, 0.18)
-	var foliage_mid := Color(0.20, 0.50, 0.22)
-	var foliage_light := Color(0.25, 0.58, 0.28)
 	draw_circle(Vector2(tree1_x, ground_y - 48.0), 28.0, foliage_dark)
 	draw_circle(Vector2(tree1_x - 8.0, ground_y - 52.0), 24.0, foliage_mid)
 	draw_circle(Vector2(tree1_x + 10.0, ground_y - 54.0), 22.0, foliage_light)
@@ -1510,37 +1967,93 @@ func _draw_critters(view: Vector2) -> void:
 func _setup_music() -> void:
 	music_player = AudioStreamPlayer.new()
 	add_child(music_player)
-	music_player.bus = "Master"
-	
-	# Try to load music from assets/audio folder
-	var music_path := "res://assets/audio/bg_music.mp3"
+	_load_track(music_track)
+
+func _load_track(name: String) -> void:
+	if music_player == null:
+		return
+	music_track = name
+	var data := MusicDatabase.get_track(name)
+	var music_path: String = String(data.get("file", "res://assets/audio/bg_music.mp3"))
 	if ResourceLoader.exists(music_path):
-		music_player.stream = load(music_path)
-		if music_player.stream:
-			music_player.volume_db = -5.0  # Slightly quieter than full volume
-			# Connect finished signal to restart music for looping
-			music_player.finished.connect(_on_music_finished)
-			music_player.play()
-			music_muted = false
+		var stream := load(music_path)
+		if stream:
+			music_player.stream = stream
+			var bus_name: String = String(data.get("bus", "Master"))
+			music_bus_index = _ensure_bus_exists(bus_name)
+			music_player.bus = bus_name
+			if not music_player.finished.is_connected(_on_music_finished):
+				music_player.finished.connect(_on_music_finished)
+			_apply_audio_settings()
+			var should_loop: bool = bool(data.get("loop", true))
+			if stream.has_method("set_loop"):
+				stream.set_loop(should_loop)
+			elif stream.has_method("set_looping"):
+				stream.call("set_looping", should_loop)
+			elif stream.has_method("set_loop_mode"):
+				stream.call("set_loop_mode", should_loop)
+			if not music_muted:
+				music_player.play()
 	else:
 		push_warning("Music file not found at: " + music_path + ". Add your music file to assets/audio/")
+
+func _apply_audio_settings() -> void:
+	if music_player == null:
+		return
+	music_player.volume_db = music_volume_db
+	music_player.pitch_scale = music_speed
+	_apply_bass_boost()
+
+func _ensure_bus_exists(bus_name: String) -> int:
+	var idx := AudioServer.get_bus_index(bus_name)
+	if idx == -1:
+		idx = AudioServer.bus_count
+		AudioServer.add_bus(idx)
+		AudioServer.set_bus_name(idx, bus_name)
+	return idx
+
+func _ensure_music_eq() -> void:
+	if music_bus_index < 0:
+		return
+	for i in range(AudioServer.get_bus_effect_count(music_bus_index)):
+		var eff := AudioServer.get_bus_effect(music_bus_index, i)
+		if eff is AudioEffectEQ6:
+			music_eq_effect = eff
+			return
+	# Add a new EQ6 if none present
+	var eq := AudioEffectEQ6.new()
+	AudioServer.add_bus_effect(music_bus_index, eq)
+	music_eq_effect = eq
+
+func _apply_bass_boost() -> void:
+	if music_bus_index < 0:
+		return
+	_ensure_music_eq()
+	if music_eq_effect:
+		# Boost first two bands for low end
+		music_eq_effect.set_band_gain_db(0, music_bass_db)
+		music_eq_effect.set_band_gain_db(1, music_bass_db * 0.75)
 
 func _on_music_finished() -> void:
 	if not music_muted and music_player.stream:
 		music_player.play()
 
 func _toggle_music() -> void:
+	if music_player == null:
+		return
 	music_muted = not music_muted
 	if music_muted:
 		music_player.stop()
 		if "music" in action_buttons:
 			action_buttons["music"].text = "Music: OFF"
 	elif music_player.stream:
+		_apply_audio_settings()
 		music_player.play()
 		if "music" in action_buttons:
 			action_buttons["music"].text = "Music: ON"
 
 func _return_to_menu() -> void:
+	_close_game_menu()
 	game_state = GameState.MENU
 	# Clean up current game
 	if plant:
