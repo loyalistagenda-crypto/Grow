@@ -60,7 +60,3 @@ grow/
 
 - The glow effect is simulated with additive blending and soft halos around the flower.
 - For an even brighter bloom, enable the Glow post-process in your Godot project settings (Project Settings → Rendering → Effects → Glow).
-
-## License
-
-MIT License - Feel free to use and modify for your own projects!
