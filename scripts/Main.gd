@@ -35,6 +35,7 @@ var drag_water_rate: float = 0.55
 var drag_feed_rate: float = 0.35
 var music_player: AudioStreamPlayer
 var music_muted: bool = false
+var custom_cursors: Dictionary = {}
 
 # Day/Night cycle
 @export var cycle_seconds: float = 240.0
@@ -63,6 +64,7 @@ func _ready() -> void:
 	RenderingServer.set_default_clear_color(sky_color)
 	_build_menu()
 	_setup_music()
+	_create_custom_cursors()
 	set_process(true)
 	get_viewport().size_changed.connect(_on_size_changed)
 	_generate_stars(90)
@@ -399,50 +401,59 @@ func _build_menu() -> void:
 	# Left arrow button
 	var left_arrow := Button.new()
 	left_arrow.text = "<"
-	left_arrow.custom_minimum_size = Vector2(60.0, 80.0)
+	left_arrow.custom_minimum_size = Vector2(60.0, 140.0)
 	left_arrow.add_theme_font_size_override("font_size", 32)
 	left_arrow.pressed.connect(_on_flower_carousel_left)
 	carousel_container.add_child(left_arrow)
 	
-	# Flower display panel
-	var display_panel := PanelContainer.new()
-	display_panel.custom_minimum_size = Vector2(300.0, 100.0)
-	carousel_container.add_child(display_panel)
+	# Flower display area (clickable button)
+	var select_area := Button.new()
+	select_area.name = "SelectAreaButton"
+	select_area.focus_mode = Control.FOCUS_NONE
+	select_area.flat = true
+	select_area.custom_minimum_size = Vector2(240.0, 260.0)
+	select_area.mouse_filter = Control.MOUSE_FILTER_STOP
+	select_area.pressed.connect(_on_select_area_pressed)
+	carousel_container.add_child(select_area)
 	
-	var display_vbox := VBoxContainer.new()
-	display_vbox.add_theme_constant_override("separation", 10)
-	display_panel.add_child(display_vbox)
-	
-	# Plant preview
+	# Plant preview as the main background
 	var preview := Control.new()
 	preview.name = "PlantPreview"
-	preview.custom_minimum_size = Vector2(280.0, 120.0)
+	preview.custom_minimum_size = Vector2(240.0, 260.0)
+	preview.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	preview.draw.connect(_on_preview_draw.bind(preview))
-	display_vbox.add_child(preview)
+	select_area.add_child(preview)
 	
+	# Name overlaid on top of preview
 	var flower_name_label := Label.new()
 	flower_name_label.name = "FlowerNameLabel"
 	flower_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	flower_name_label.add_theme_font_size_override("font_size", 24)
-	display_vbox.add_child(flower_name_label)
+	flower_name_label.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	flower_name_label.offset_top = 3
+	flower_name_label.offset_left = 0
+	flower_name_label.offset_right = 0
+	flower_name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	preview.add_child(flower_name_label)
 	
+	# Description overlaid below the name
 	var flower_desc := Label.new()
 	flower_desc.name = "FlowerDescLabel"
 	flower_desc.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	flower_desc.add_theme_font_size_override("font_size", 14)
 	flower_desc.autowrap_mode = TextServer.AUTOWRAP_WORD
-	display_vbox.add_child(flower_desc)
-	
-	var select_btn := Button.new()
-	select_btn.text = "Select This Plant"
-	select_btn.custom_minimum_size = Vector2(200.0, 40.0)
-	select_btn.pressed.connect(_on_flower_select_current)
-	display_vbox.add_child(select_btn)
+	flower_desc.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	flower_desc.offset_top = 32
+	flower_desc.offset_left = 4
+	flower_desc.offset_right = -4
+	flower_desc.modulate = Color(1.0, 1.0, 1.0, 0.95)
+	flower_desc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	preview.add_child(flower_desc)
 	
 	# Right arrow button
 	var right_arrow := Button.new()
 	right_arrow.text = ">"
-	right_arrow.custom_minimum_size = Vector2(60.0, 80.0)
+	right_arrow.custom_minimum_size = Vector2(60.0, 140.0)
 	right_arrow.add_theme_font_size_override("font_size", 32)
 	right_arrow.pressed.connect(_on_flower_carousel_right)
 	carousel_container.add_child(right_arrow)
@@ -451,10 +462,85 @@ func _build_menu() -> void:
 	collection_btn.text = "View Collection"
 	collection_btn.custom_minimum_size = Vector2(200.0, 40.0)
 	collection_btn.pressed.connect(_on_view_collection)
+	var spacer := Control.new()
+	spacer.custom_minimum_size = Vector2(0, 25)
+	vbox.add_child(spacer)
 	vbox.add_child(collection_btn)
 	
 	# Update display to show first flower
 	_update_flower_display()
+
+	# Confirmation dialog for planting
+	var confirm := ConfirmationDialog.new()
+	confirm.name = "SeedConfirmDialog"
+	confirm.dialog_text = "Plant this seed?"
+	confirm.ok_button_text = "Yes"
+	confirm.cancel_button_text = "No"
+	confirm.min_size = Vector2(360, 220)
+	confirm.title = "Confirm Planting"
+	confirm.confirmed.connect(_on_seed_confirmed)
+	# Cozy theme tweaks
+	var panel := StyleBoxFlat.new()
+	panel.bg_color = Color(0.20, 0.16, 0.12, 0.95)
+	panel.content_margin_left = 12
+	panel.content_margin_right = 12
+	panel.content_margin_top = 12
+	panel.content_margin_bottom = 24
+	panel.corner_radius_top_left = 10
+	panel.corner_radius_top_right = 10
+	panel.corner_radius_bottom_left = 10
+	panel.corner_radius_bottom_right = 10
+	panel.border_width_left = 2
+	panel.border_width_top = 2
+	panel.border_width_right = 2
+	panel.border_width_bottom = 2
+	panel.border_color = Color(0.55, 0.40, 0.30)
+	confirm.add_theme_stylebox_override("panel", panel)
+	confirm.add_theme_color_override("title_color", Color(0.95, 0.90, 0.80))
+	confirm.add_theme_color_override("font_color", Color(0.95, 0.90, 0.80))
+	confirm.add_theme_font_size_override("font_size", 32)
+	confirm.add_theme_constant_override("title_outline_size", 3)
+	confirm.add_theme_constant_override("outline_size", 3)
+	# Style buttons
+	var ok_btn := confirm.get_ok_button()
+	var cancel_btn := confirm.get_cancel_button()
+	ok_btn.custom_minimum_size = Vector2(180.0, 60.0)
+	cancel_btn.custom_minimum_size = Vector2(180.0, 60.0)
+	ok_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	cancel_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	ok_btn.add_theme_font_size_override("font_size", 26)
+	cancel_btn.add_theme_font_size_override("font_size", 26)
+	var ok_style := StyleBoxFlat.new()
+	ok_style.bg_color = Color(0.08, 0.35, 0.18)
+	ok_style.border_color = Color(0.05, 0.25, 0.12)
+	ok_style.corner_radius_top_left = 8
+	ok_style.corner_radius_top_right = 8
+	ok_style.corner_radius_bottom_left = 8
+	ok_style.corner_radius_bottom_right = 8
+	ok_style.border_width_left = 2
+	ok_style.border_width_top = 2
+	ok_style.border_width_right = 2
+	ok_style.border_width_bottom = 2
+	ok_btn.add_theme_stylebox_override("normal", ok_style)
+	ok_btn.add_theme_stylebox_override("hover", ok_style)
+	ok_btn.add_theme_stylebox_override("pressed", ok_style)
+	ok_btn.add_theme_color_override("font_color", Color(0.93, 0.96, 0.90))
+	var cancel_style := StyleBoxFlat.new()
+	cancel_style.bg_color = Color(0.55, 0.12, 0.18)
+	cancel_style.border_color = Color(0.35, 0.08, 0.12)
+	cancel_style.corner_radius_top_left = 8
+	cancel_style.corner_radius_top_right = 8
+	cancel_style.corner_radius_bottom_left = 8
+	cancel_style.corner_radius_bottom_right = 8
+	cancel_style.border_width_left = 2
+	cancel_style.border_width_top = 2
+	cancel_style.border_width_right = 2
+	cancel_style.border_width_bottom = 2
+	cancel_btn.add_theme_stylebox_override("normal", cancel_style)
+	cancel_btn.add_theme_stylebox_override("hover", cancel_style)
+	cancel_btn.add_theme_stylebox_override("pressed", cancel_style)
+	cancel_btn.add_theme_color_override("font_color", Color(0.98, 0.92, 0.92))
+	menu_layer.add_child(confirm)
 
 func _on_flower_selected(variant: String) -> void:
 	selected_flower_variant = variant
@@ -479,6 +565,16 @@ func _on_flower_select_current() -> void:
 	var current_flower = flower_options[current_flower_index]
 	_on_flower_selected(current_flower["variant"])
 
+func _on_select_area_pressed() -> void:
+	var dialog := menu_layer.find_child("SeedConfirmDialog", true, false)
+	if dialog:
+		var current_flower = flower_options[current_flower_index]
+		dialog.dialog_text = "Plant %s Seed?" % current_flower["name"]
+		dialog.popup_centered()
+
+func _on_seed_confirmed() -> void:
+	_on_flower_select_current()
+
 func _update_flower_display() -> void:
 	if not menu_layer:
 		return
@@ -494,9 +590,9 @@ func _update_flower_display() -> void:
 			"purple": "Classic elegant blooms",
 			"yellow": "Bright sunny flowers",
 			"red": "Bold passionate petals",
-			"rainbow": "Magical spectrum blooms with glow",
-			"rose_bush": "Natural branching with tiny roses",
-			"rainbow_rose_bush": "Bushy rainbow blooms with surprises"
+			"rainbow": "Magical spectrum blooms",
+			"rose_bush": "Natural branching roses",
+			"rainbow_rose_bush": "Bushy rainbow blooms"
 		}
 		desc_label.text = descriptions.get(current_flower["variant"], "Beautiful plant")
 	if preview:
@@ -506,30 +602,32 @@ func _on_preview_draw(preview_control: Control) -> void:
 	var current_flower = flower_options[current_flower_index]
 	var variant: String = current_flower["variant"]
 	var size := preview_control.size
-	var center := Vector2(size.x * 0.5, size.y - 10.0)
+	var overlay_h := 48.0
+	var scale := clampf(minf(size.x / 100.0, size.y / 80.0), 1.8, 3.0)
+	var center := Vector2(size.x * 0.5, size.y - overlay_h * 0.5)
 	
 	# Background
 	preview_control.draw_rect(Rect2(Vector2.ZERO, size), Color(0.15, 0.20, 0.15))
 	
 	# Draw miniature pot
-	var pot_w := 20.0
-	var pot_h := 15.0
+	var pot_w := 20.0 * scale
+	var pot_h := 15.0 * scale
 	var pot_pts := PackedVector2Array([
-		center + Vector2(-pot_w * 0.5, -5.0),
-		center + Vector2(pot_w * 0.5, -5.0),
-		center + Vector2(pot_w * 0.4, -5.0 + pot_h),
-		center + Vector2(-pot_w * 0.4, -5.0 + pot_h)
+		center + Vector2(-pot_w * 0.5, -5.0 * scale),
+		center + Vector2(pot_w * 0.5, -5.0 * scale),
+		center + Vector2(pot_w * 0.4, -5.0 * scale + pot_h),
+		center + Vector2(-pot_w * 0.4, -5.0 * scale + pot_h)
 	])
 	preview_control.draw_colored_polygon(pot_pts, Color(0.55, 0.35, 0.20))
 	
 	if variant == "rose_bush" or variant == "rainbow_rose_bush":
 		# Mini rose bush with multiple stems from center
 		var stem_col := Color(0.16, 0.50, 0.25)
-		var pot_top := center + Vector2(0.0, -5.0)
+		var pot_top := center + Vector2(0.0, -5.0 * scale)
 		for i in range(5):
 			var t: float = float(i) / 4.0
 			var angle: float = lerp(-0.6, 0.6, t)
-			var height: float = randf_range(35.0, 50.0)
+			var height: float = randf_range(35.0, 50.0) * scale
 			var stem_tip := pot_top + Vector2(sin(angle) * height * 0.4, -height)
 			preview_control.draw_line(pot_top, stem_tip, stem_col, 1.5)
 			# Tiny bloom at tip
@@ -537,28 +635,28 @@ func _on_preview_draw(preview_control: Control) -> void:
 				for j in range(6):
 					var petal_angle: float = (TAU / 6.0) * float(j)
 					var col := Color.from_hsv(float(j) / 6.0, 0.9, 0.95)
-					var petal_pos := stem_tip + Vector2(cos(petal_angle), sin(petal_angle)) * 2.0
-					preview_control.draw_circle(petal_pos, 1.5, col)
-				preview_control.draw_circle(stem_tip, 1.5, Color(1.0, 0.95, 0.70))
+					var petal_pos := stem_tip + Vector2(cos(petal_angle), sin(petal_angle)) * 2.0 * scale
+					preview_control.draw_circle(petal_pos, 1.5 * scale, col)
+				preview_control.draw_circle(stem_tip, 1.5 * scale, Color(1.0, 0.95, 0.70))
 			else:
-				preview_control.draw_circle(stem_tip, 2.5, Color(0.95, 0.45, 0.55))
-				preview_control.draw_circle(stem_tip, 1.5, Color(0.85, 0.35, 0.45))
+				preview_control.draw_circle(stem_tip, 2.5 * scale, Color(0.95, 0.45, 0.55))
+				preview_control.draw_circle(stem_tip, 1.5 * scale, Color(0.85, 0.35, 0.45))
 	else:
 		# Single stem flower
 		var stem_col := Color(0.16, 0.50, 0.25)
-		var stem_base := center + Vector2(0.0, -5.0)
-		var stem_tip := stem_base + Vector2(0.0, -60.0)
-		preview_control.draw_line(stem_base, stem_tip, stem_col, 2.0)
+		var stem_base := center + Vector2(0.0, -5.0 * scale)
+		var stem_tip := stem_base + Vector2(0.0, -60.0 * scale)
+		preview_control.draw_line(stem_base, stem_tip, stem_col, 2.0 * scale)
 		
 		# Leaves
 		for i in range(3):
-			var y: float = lerp(-10.0, -50.0, float(i + 1) / 4.0)
+			var y: float = lerp(-10.0, -50.0, float(i + 1) / 4.0) * scale
 			var side: float = 1.0 if i % 2 == 0 else -1.0
 			var leaf_base := stem_base + Vector2(0.0, y)
-			var leaf_tip := leaf_base + Vector2(side * 8.0, -3.0)
+			var leaf_tip := leaf_base + Vector2(side * 8.0 * scale, -3.0 * scale)
 			var leaf_pts := PackedVector2Array([
 				leaf_base,
-				leaf_base + Vector2(side * 4.0, 0.0),
+				leaf_base + Vector2(side * 4.0 * scale, 0.0),
 				leaf_tip,
 			])
 			preview_control.draw_colored_polygon(leaf_pts, Color(0.25, 0.70, 0.35))
@@ -569,29 +667,29 @@ func _on_preview_draw(preview_control: Control) -> void:
 			for i in range(12):
 				var angle: float = (TAU / 12.0) * float(i)
 				var col := Color.from_hsv(float(i) / 12.0, 0.9, 0.95)
-				var petal_tip := stem_tip + Vector2(cos(angle), sin(angle)) * 8.0
+				var petal_tip := stem_tip + Vector2(cos(angle), sin(angle)) * 8.0 * scale
 				var petal_pts := PackedVector2Array([
 					stem_tip,
-					stem_tip + Vector2(cos(angle - 0.3), sin(angle - 0.3)) * 4.0,
+					stem_tip + Vector2(cos(angle - 0.3), sin(angle - 0.3)) * 4.0 * scale,
 					petal_tip,
-					stem_tip + Vector2(cos(angle + 0.3), sin(angle + 0.3)) * 4.0
+					stem_tip + Vector2(cos(angle + 0.3), sin(angle + 0.3)) * 4.0 * scale
 				])
 				preview_control.draw_colored_polygon(petal_pts, col)
-			preview_control.draw_circle(stem_tip, 3.0, Color(1.0, 1.0, 1.0))
+			preview_control.draw_circle(stem_tip, 3.0 * scale, Color(1.0, 1.0, 1.0))
 		else:
 			# Regular flower
 			var petal_col: Color = current_flower["color"]
 			for i in range(8):
 				var angle: float = (TAU / 8.0) * float(i)
-				var petal_tip := stem_tip + Vector2(cos(angle), sin(angle)) * 7.0
+				var petal_tip := stem_tip + Vector2(cos(angle), sin(angle)) * 7.0 * scale
 				var petal_pts := PackedVector2Array([
 					stem_tip,
-					stem_tip + Vector2(cos(angle - 0.3), sin(angle - 0.3)) * 3.5,
+					stem_tip + Vector2(cos(angle - 0.3), sin(angle - 0.3)) * 3.5 * scale,
 					petal_tip,
-					stem_tip + Vector2(cos(angle + 0.3), sin(angle + 0.3)) * 3.5
+					stem_tip + Vector2(cos(angle + 0.3), sin(angle + 0.3)) * 3.5 * scale
 				])
 				preview_control.draw_colored_polygon(petal_pts, petal_col)
-			preview_control.draw_circle(stem_tip, 2.5, petal_col * 0.8)
+			preview_control.draw_circle(stem_tip, 2.5 * scale, petal_col * 0.8)
 
 func _on_view_collection() -> void:
 	# TODO: Show collection of grown plants
@@ -743,6 +841,12 @@ func _set_action(action: int) -> void:
 		if key is int:  # Only process integer action keys
 			action_buttons[key].button_pressed = key == current_action
 	_update_action_hint()
+	
+	# Set custom cursor based on action
+	if action in custom_cursors:
+		Input.set_custom_mouse_cursor(custom_cursors[action], Input.CURSOR_ARROW, Vector2(8, 8))
+	else:
+		Input.set_custom_mouse_cursor(null)
 
 func _on_action_button(action: int) -> void:
 	_set_action(action)
@@ -788,7 +892,7 @@ func _update_action_hint() -> void:
 		Action.FEED:
 			name = "Feed nutrients"
 		Action.PRUNE:
-			name = "Prune wilted leaves"
+			name = "Click wilted leaves to prune"
 		Action.REPOT:
 			name = "Repot"
 	action_hint.text = "Current action: %s" % name
@@ -800,13 +904,21 @@ func _apply_action_press() -> void:
 	if current_action in [Action.PRUNE, Action.REPOT]:
 		drag_active = false
 		drag_button = -1
+	
+	# Special handling for PRUNE - try to click on individual leaf
+	if current_action == Action.PRUNE:
+		var mouse_pos := get_viewport().get_mouse_position()
+		var plant_local_pos := mouse_pos - plant.position
+		if plant.try_prune_leaf(plant_local_pos):
+			return  # Successfully pruned a leaf
+	
 	match current_action:
 		Action.WATER:
 			plant.water()
 		Action.FEED:
 			plant.feed_nutrients()
 		Action.PRUNE:
-			plant.prune()
+			plant.prune()  # Fallback to old prune if didn't click a leaf
 		Action.REPOT:
 			plant.repot()
 
@@ -821,33 +933,38 @@ func _apply_action_drag(delta: float) -> void:
 		_:
 			pass
 
+
 func _sky_color(p: float) -> Color:
-	# Phases: dawn 0.00-0.15, day 0.15-0.4167, dusk 0.4167-0.5167,
-	# night deepen 0.5167-0.8583, pre-dawn 0.8583-1.00 (night -> dawn).
+	# Phases: dawn 0.00-0.15, day 0.15-0.4167, dusk 0.4167-0.5584,
+	# dusk->night 0.5584-0.6584, steady night 0.6584-0.9000, dawn 0.9000-1.00.
 	if p < 0.15:
 		var t: float = p / 0.15
 		return sky_dawn.lerp(sky_day, t)
 	elif p < 0.4167:
 		return sky_day
-	elif p < 0.5167:
-		var t: float = (p - 0.4167) / 0.10
+	elif p < 0.5584:
+		var t: float = (p - 0.4167) / 0.1417
 		return sky_day.lerp(sky_dusk, t)
-	elif p < 0.8583:
-		var t: float = (p - 0.5167) / 0.3416
+	elif p < 0.6584:
+		var t: float = (p - 0.5584) / 0.10
 		return sky_dusk.lerp(sky_night, t)
+	elif p < 0.9000:
+		return sky_night
 	else:
-		var t: float = (p - 0.8583) / 0.1417
+		var t: float = (p - 0.9000) / 0.10
 		return sky_night.lerp(sky_dawn, clampf(t, 0.0, 1.0))
 
 func _star_alpha(p: float) -> float:
-	# Stars fade in 0.5167-0.8583, fade out 0.8583-1.00 for smooth dawn.
-	if p < 0.5167:
+	# Stars fade in during dusk->night 0.5584-0.6584, stay on through 0.9000, then fade out to dawn.
+	if p < 0.5584:
 		return 0.0
-	elif p < 0.8583:
-		var t: float = (p - 0.5167) / 0.3416
+	elif p < 0.6584:
+		var t: float = (p - 0.5584) / 0.10
 		return clampf(t, 0.0, 1.0)
+	elif p < 0.9000:
+		return 1.0
 	else:
-		var t: float = (1.0 - p) / 0.1417
+		var t: float = (1.0 - p) / 0.10
 		return clampf(t, 0.0, 1.0)
 
 func _sun_position(view: Vector2, p: float) -> Vector2:
@@ -1273,5 +1390,230 @@ func _return_to_menu() -> void:
 		ui_layer.queue_free()
 		ui_layer = null
 	action_buttons.clear()
+	# Reset cursor to default
+	Input.set_custom_mouse_cursor(null)
 	# Rebuild menu
 	_build_menu()
+
+func _create_custom_cursors() -> void:
+	# Create custom cursor icons for each tool
+	custom_cursors[Action.WATER] = _create_watering_can_cursor()
+	custom_cursors[Action.FEED] = _create_fertilizer_cursor()
+	custom_cursors[Action.PRUNE] = _create_pruner_cursor()
+	custom_cursors[Action.REPOT] = _create_pot_cursor()
+
+func _create_watering_can_cursor() -> ImageTexture:
+	var img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	
+	# Draw a watering can with white border
+	var can_color := Color(0.5, 0.6, 0.7)
+	var border_color := Color(1.0, 1.0, 1.0)
+	
+	# White border - can body
+	for y in range(4, 26):
+		for x in range(0, 18):
+			if x < 3 or x >= 15 or y < 7 or y >= 23:
+				if x >= 0 and y >= 4:
+					img.set_pixel(x, y, border_color)
+	
+	# Can body
+	for y in range(7, 23):
+		for x in range(3, 15):
+			img.set_pixel(x, y, can_color)
+	
+	# White border - spout
+	for x in range(15, 30):
+		for y in range(10, 18):
+			if x < 18 or x >= 27 or y < 13 or y >= 15:
+				img.set_pixel(x, y, border_color)
+	
+	# Spout
+	for x in range(18, 27):
+		for y in range(13, 15):
+			img.set_pixel(x, y, can_color)
+	
+	# Handle with border
+	var handle_color := Color(0.4, 0.5, 0.6)
+	for y in range(8, 22):
+		for x in range(0, 5):
+			if x == 0 or y == 8 or y == 21:
+				img.set_pixel(x, y, border_color)
+			elif x >= 1 and x < 4 and y > 8 and y < 21:
+				img.set_pixel(x, y, handle_color)
+	
+	# Water drops with white border
+	var drop_color := Color(0.4, 0.6, 0.9, 0.9)
+	for drop in [[27, 18], [28, 23], [29, 28]]:
+		var dx = drop[0]
+		var dy = drop[1]
+		if dy < 32:
+			# Border
+			for by in range(-1, 3):
+				for bx in range(-1, 3):
+					if dx+bx >= 0 and dx+bx < 32 and dy+by >= 0 and dy+by < 32:
+						if bx == -1 or bx == 2 or by == -1 or by == 2:
+							img.set_pixel(dx+bx, dy+by, border_color)
+			# Drop
+			for by in range(0, 2):
+				for bx in range(0, 2):
+					if dx+bx < 32 and dy+by < 32:
+						img.set_pixel(dx+bx, dy+by, drop_color)
+	
+	return ImageTexture.create_from_image(img)
+
+func _create_fertilizer_cursor() -> ImageTexture:
+	var img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	
+	# Draw a fertilizer bag with white border
+	var bag_color := Color(0.8, 0.6, 0.4)
+	var dark_bag := Color(0.7, 0.5, 0.3)
+	var border_color := Color(1.0, 1.0, 1.0)
+	
+	# White border around entire bag
+	for y in range(0, 30):
+		for x in range(3, 29):
+			if x < 6 or x >= 26 or y < 3 or y >= 27:
+				if y >= 0:
+					img.set_pixel(x, y, border_color)
+	
+	# Bag shape (main body)
+	for y in range(6, 27):
+		for x in range(6, 26):
+			img.set_pixel(x, y, bag_color)
+	
+	# Bag top (folded area)
+	for x in range(6, 26):
+		for y in range(3, 9):
+			if y >= 3:
+				img.set_pixel(x, y, dark_bag)
+	
+	# Label stripe (green)
+	var label_color := Color(0.3, 0.6, 0.3)
+	for y in range(13, 21):
+		for x in range(8, 24):
+			img.set_pixel(x, y, label_color)
+	
+	# Label text suggestion (darker green lines)
+	var text_color := Color(0.2, 0.4, 0.2)
+	for x in range(10, 22):
+		img.set_pixel(x, 15, text_color)
+		img.set_pixel(x, 18, text_color)
+	
+	return ImageTexture.create_from_image(img)
+
+func _create_pruner_cursor() -> ImageTexture:
+	var img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	
+	# Draw scissors with white border
+	var blade_color := Color(0.7, 0.7, 0.75)
+	var handle_color := Color(0.6, 0.2, 0.2)
+	var border_color := Color(1.0, 1.0, 1.0)
+	
+	# Left blade - larger pointed blade going up-left
+	for i in range(14):
+		var blade_width = 4 if i < 10 else 3
+		for thick in range(blade_width):
+			var px = 4 + i - thick
+			var py = 1 + i
+			if px >= 0 and px < 32 and py < 32:
+				if thick == 0 or thick == blade_width - 1:
+					img.set_pixel(px, py, border_color)
+				else:
+					img.set_pixel(px, py, blade_color)
+	
+	# Right blade - larger pointed blade going up-right
+	for i in range(14):
+		var blade_width = 4 if i < 10 else 3
+		for thick in range(blade_width):
+			var px = 28 - i + thick
+			var py = 1 + i
+			if px >= 0 and px < 32 and py < 32:
+				if thick == 0 or thick == blade_width - 1:
+					img.set_pixel(px, py, border_color)
+				else:
+					img.set_pixel(px, py, blade_color)
+	
+	# Left handle loop with border
+	var loop_left_center_x = 8
+	var loop_left_center_y = 24
+	for y in range(18, 30):
+		for x in range(2, 14):
+			var dx = x - loop_left_center_x
+			var dy = y - loop_left_center_y
+			var dist = sqrt(dx * dx + dy * dy)
+			if dist < 6.5 and dist > 3.5:
+				if dist < 4.5 or dist > 5.5:
+					img.set_pixel(x, y, border_color)
+				else:
+					img.set_pixel(x, y, handle_color)
+	
+	# Right handle loop with border
+	var loop_right_center_x = 24
+	var loop_right_center_y = 24
+	for y in range(18, 30):
+		for x in range(18, 30):
+			var dx = x - loop_right_center_x
+			var dy = y - loop_right_center_y
+			var dist = sqrt(dx * dx + dy * dy)
+			if dist < 6.5 and dist > 3.5:
+				if dist < 4.5 or dist > 5.5:
+					img.set_pixel(x, y, border_color)
+				else:
+					img.set_pixel(x, y, handle_color)
+	
+	# Pivot point with border (center where blades cross)
+	for y in range(13, 19):
+		for x in range(13, 19):
+			if x == 13 or x == 18 or y == 13 or y == 18:
+				img.set_pixel(x, y, border_color)
+			else:
+				img.set_pixel(x, y, Color(0.3, 0.3, 0.3))
+	
+	return ImageTexture.create_from_image(img)
+
+func _create_pot_cursor() -> ImageTexture:
+	var img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	
+	# Draw a pot with white border
+	var pot_color := Color(0.7, 0.4, 0.3)
+	var rim_color := Color(0.8, 0.5, 0.4)
+	var border_color := Color(1.0, 1.0, 1.0)
+	
+	# White border - rim
+	for x in range(0, 32):
+		for y in range(3, 9):
+			if x < 3 or x >= 29 or y < 6:
+				img.set_pixel(x, y, border_color)
+	
+	# Pot rim
+	for x in range(3, 29):
+		for y in range(6, 9):
+			img.set_pixel(x, y, rim_color)
+	
+	# Pot body with border (tapered)
+	for y in range(9, 29):
+		var width := 22.0 + (y - 9) * 0.4
+		var start_x := 16.0 - width / 2.0
+		var end_x := 16.0 + width / 2.0
+		for x in range(32):
+			if x >= start_x - 3 and x < end_x + 3:
+				if x < start_x or x >= end_x:
+					# Border
+					img.set_pixel(x, y, border_color)
+				else:
+					# Pot body
+					img.set_pixel(x, y, pot_color)
+	
+	# Bottom with border
+	for x in range(4, 28):
+		for y in range(29, 32):
+			if y == 29:
+				img.set_pixel(x, y, border_color)
+			else:
+				img.set_pixel(x, y, Color(0.6, 0.3, 0.2))
+	
+	return ImageTexture.create_from_image(img)

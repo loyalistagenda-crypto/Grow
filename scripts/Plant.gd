@@ -31,6 +31,7 @@ var _rainbow_glow_material: CanvasItemMaterial
 @export var wilt_threshold: float = 0.22
 @export var overwater_threshold: float = 0.86
 @export var pot_caps: PackedFloat64Array = [0.35, 0.7, 1.0]
+@export var leaf_lifetime: float = 45.0  # Seconds before leaf starts wilting
 
 var growth: float = 0.0
 var moisture: float = 0.0
@@ -46,10 +47,30 @@ var splash_timer: float = 0.0
 var _rng: RandomNumberGenerator
 var _rose_branch_plan: Array = [] # Per-stem randomized side-branch spawn plan
 
+# Individual leaf tracking
+var leaves: Array[Dictionary] = []  # Array of leaf dictionaries
+var fallen_leaves: Array[Dictionary] = []  # Leaves on the ground
+var _leaf_min_spacing: float = 0.08
+var _leaf_spawn_timer: float = 0.0
+var _leaf_spawn_min: float = 8.0
+var _leaf_spawn_max: float = 12.0
+var _leaf_life_min: float = 120.0
+var _leaf_life_max: float = 180.0
+var _starter_leaves_active: bool = true
+var _starter_leaves_dropped: bool = false
+var _branch_leaf_anchors: Dictionary = {} # key -> Vector2 smoothed attach point
+var _branch_leaf_normals: Dictionary = {} # key -> Vector2 smoothed branch direction
+
 func _ready() -> void:
 	if variant_name == "rose_bush":
 		_ensure_rng()
 		_init_rose_bush_plan()
+	else:
+		_ensure_rng()
+	_schedule_next_leaf_spawn()
+	# Seed a few starter leaves so plant is not bare
+	for i in range(2):
+		_try_spawn_leaf()
 
 func _ensure_rng() -> void:
 	if _rng == null:
@@ -69,6 +90,16 @@ func _process(delta: float) -> void:
 	var target_growth: float = minf(time_gate, pot_cap)
 	var stress := _compute_stress(pot_cap, target_growth)
 	_accumulate_wilt(stress, delta, pot_cap)
+	
+	# Update individual leaves
+	_update_leaves(delta)
+	_leaf_spawn_timer -= delta
+	if _leaf_spawn_timer <= 0.0:
+		_try_spawn_leaf()
+		_schedule_next_leaf_spawn()
+	
+	# Update fallen leaves
+	_update_fallen_leaves(delta)
 
 	var energy: float = base_growth_rate * (1.0 + moisture * water_bonus + nutrients * nutrient_bonus)
 	energy *= maxf(0.25, 1.0 - stress)
@@ -78,6 +109,10 @@ func _process(delta: float) -> void:
 		growth = minf(target_growth, growth + energy * delta)
 	elif growth > target_growth:
 		growth = maxf(target_growth, growth - energy * 0.2 * delta)
+
+	# Drop starter leaves once plant passes 5% growth
+	if _starter_leaves_active and growth >= 0.05:
+		_drop_starter_leaves()
 
 	bloom_progress = clampf((total_time - seconds_per_day * growth_days) / (seconds_per_day * bloom_days), 0.0, 1.0)
 	queue_redraw()
@@ -190,6 +225,245 @@ func _accumulate_wilt(stress: float, delta: float, pot_cap: float) -> void:
 		wilted_leaves += 1
 		wilt_accum = 0.0
 
+func _update_leaves(delta: float) -> void:
+	# Update age and state of each leaf
+	for leaf: Dictionary in leaves:
+		leaf["age"] += delta
+		var life: float = float(leaf.get("lifetime", _leaf_life_max))
+		var wilt_start := life * 0.7
+		var brown_start := life
+		
+		# Update state based on age
+		if leaf["age"] >= brown_start:  # Fully wilted/brown
+			if leaf["state"] != "brown":
+				leaf["state"] = "brown"
+				wilted_leaves += 1
+			leaf["sag_progress"] = minf(1.0, leaf["sag_progress"] + delta * 0.25)
+		elif leaf["age"] >= wilt_start:  # Starting to wilt/dark green
+			if leaf["state"] == "healthy":
+				leaf["state"] = "wilting"
+			leaf["sag_progress"] = minf(1.0, leaf["sag_progress"] + delta * 0.18)
+		
+		# Update sway animation
+		leaf["sway_offset"] += delta
+
+func _update_fallen_leaves(delta: float) -> void:
+	# Update fallen leaves on ground
+	var to_remove: Array = []
+	for i in range(fallen_leaves.size()):
+		var fallen: Dictionary = fallen_leaves[i]
+		# Apply gravity until it reaches ground
+		if fallen["position"].y < fallen["target_y"]:
+			fallen["fall_velocity"] += 160.0 * delta
+			fallen["position"].y = minf(fallen["position"].y + fallen["fall_velocity"] * delta, fallen["target_y"])
+			fallen["position"].x += fallen["horizontal_drift"] * delta * 0.8
+			fallen["rotation"] += fallen["rotation_speed"] * delta
+		else:
+			fallen["time_on_ground"] += delta
+			# Blink effect after 3 seconds
+			if fallen["time_on_ground"] > 3.0:
+				fallen["blink_timer"] += delta
+				if fallen["time_on_ground"] > 5.0:  # Disappear after 5 seconds
+					to_remove.append(i)
+	
+	# Remove disappeared leaves (in reverse to preserve indices)
+	for i in range(to_remove.size() - 1, -1, -1):
+		fallen_leaves.remove_at(to_remove[i])
+
+func _create_leaf(index: int, t: float, side: float) -> Dictionary:
+	return {
+		"index": index,
+		"t": t,
+		"side": side,
+		"age": 0.0,
+		"state": "healthy",
+		"sag_progress": 0.0,  # 0 fresh, 1 fully drooped
+		"sway_offset": _rng.randf() * TAU,
+	}
+
+func _regenerate_leaves_if_needed() -> void:
+	# No-op; leaf growth is now driven by timed spawning
+	pass
+
+func _leaf_slot_too_close(t_new: float, side: float, stem_height: float) -> bool:
+	var y_new := -stem_height * t_new
+	for leaf in leaves:
+		if float(leaf["side"]) != side:
+			continue
+		var y_existing := -stem_height * float(leaf["t"])
+		if absf(y_existing - y_new) < 10.0:
+			return true
+	return false
+
+func _schedule_next_leaf_spawn() -> void:
+	_leaf_spawn_timer = _rng.randf_range(_leaf_spawn_min, _leaf_spawn_max)
+
+func _try_spawn_leaf() -> void:
+	if growth <= 0.05:
+		return
+	var stem_height := _ease_out(growth) * max_height
+	if stem_height < 20.0:
+		return
+	var tries := 0
+	var placed := false
+	# Allow leaves to reach the upper stem early so it's full before first repot
+	var max_t := clampf(growth + 0.70, 0.55, 0.995)
+	var min_t := 0.05
+	while tries < 30 and not placed:
+		# Strong upward bias so upper stem fills
+		var p := pow(_rng.randf(), 0.4)
+		var t_new: float = lerp(min_t, max_t, p)
+		var side := 1.0 if _rng.randf() > 0.5 else -1.0
+		if _leaf_slot_too_close(t_new, side, stem_height):
+			tries += 1
+			continue
+		var leaf := _create_leaf(leaves.size(), t_new, side)
+		leaf["lifetime"] = _rng.randf_range(_leaf_life_min, _leaf_life_max)
+		leaves.append(leaf)
+		placed = true
+	if placed:
+		leaves.sort_custom(func(a, b): return float(a["t"]) < float(b["t"]))
+
+func _drop_starter_leaves() -> void:
+	_starter_leaves_active = false
+	if _starter_leaves_dropped:
+		return
+	_starter_leaves_dropped = true
+	var stem_height := _ease_out(growth) * max_height
+	var sway := sin(time_accum * 1.3) * 6.0 * growth
+	var tip := Vector2(sway, -stem_height)
+	for side in [-1.0, 1.0]:
+		var dir: Vector2 = Vector2(side * leaf_size.x * 0.9, -leaf_size.y * 0.4)
+		var attach: Vector2 = tip + dir * 0.1
+		var tip_point: Vector2 = attach + dir
+		var mid: Vector2 = attach + dir * 0.55
+		var normal: Vector2 = Vector2(-dir.y, dir.x).normalized() * leaf_size.y * 0.35 * side * -1.0
+		var taper: Vector2 = dir.normalized() * leaf_size.y * 0.25
+		var pts := PackedVector2Array([
+			attach,
+			attach + normal * 0.35 + taper * 0.3,
+			mid + normal * 0.6,
+			tip_point,
+			mid - normal * 0.6,
+			attach - normal * 0.35 + taper * 0.3,
+		])
+		var center := Vector2.ZERO
+		for p in pts:
+			center += p
+		center /= float(pts.size())
+		var local_pts := PackedVector2Array()
+		for p in pts:
+			local_pts.append(p - center)
+		var fallen := {
+			"position": center,
+			"target_y": 80.0,
+			"fall_velocity": 0.0,
+			"rotation": 0.0,
+			"rotation_speed": randf_range(-1.0, 1.0),
+			"horizontal_drift": randf_range(-10.0, 10.0),
+			"color": leaf_color,
+			"poly_local": local_pts,
+			"time_on_ground": 0.0,
+			"blink_timer": 0.0
+		}
+		fallen_leaves.append(fallen)
+
+func try_prune_leaf(click_pos: Vector2) -> bool:
+	# Check if click hit any wilted/brown leaf
+	var stem_height := _ease_out(growth) * max_height
+	var sway := sin(time_accum * 1.3) * 6.0 * growth
+	
+	for i in range(leaves.size() - 1, -1, -1):
+		var leaf := leaves[i]
+		
+		# Only prune wilted or brown leaves
+		if leaf["state"] != "wilting" and leaf["state"] != "brown":
+			continue
+		
+		# Calculate leaf position
+		var y: float = -stem_height * float(leaf["t"])
+		var attach := Vector2(sway * (1.0 - float(leaf["t"]) * 0.5), y)
+		var leaf_sway: float = sin(time_accum * 1.8 + float(leaf["index"]) + float(leaf["sway_offset"])) * 4.0 * growth
+		var base_angle: float = deg_to_rad(8.0 * float(leaf["side"])) + leaf_sway * 0.02
+		var dir := Vector2(float(leaf["side"]) * leaf_size.x, -leaf_size.y * 0.35).rotated(base_angle)
+		var sag_t: float = clampf(float(leaf.get("sag_progress", 0.0)), 0.0, 1.0)
+		var target_down := Vector2(0.0, leaf_size.y * 0.9)
+		dir = dir.lerp(target_down, sag_t)
+		var tip_point := attach + dir
+		var mid := attach + dir * 0.5 + Vector2(0.0, -leaf_size.y * 0.35)
+		var spread := Vector2(dir.x * 0.25, leaf_size.y * 0.8 * float(leaf["side"]))
+		
+		# Create polygon for hit testing
+		var pts := PackedVector2Array([
+			attach,
+			mid + spread * -1.0,
+			tip_point,
+			mid + spread,
+		])
+		# Color used for drawing and falling leaf capture
+		var leaf_col: Color
+		match leaf["state"]:
+			"healthy":
+				leaf_col = leaf_color
+			"wilting":
+				leaf_col = leaf_color.darkened(0.3)
+			"brown":
+				leaf_col = Color(0.35, 0.25, 0.15)
+		
+		# Enlarge hitbox: padded bounding box + polygon
+		var pad := 8.0
+		var min_x := minf(minf(pts[0].x, pts[1].x), minf(pts[2].x, pts[3].x)) - pad
+		var max_x := maxf(maxf(pts[0].x, pts[1].x), maxf(pts[2].x, pts[3].x)) + pad
+		var min_y := minf(minf(pts[0].y, pts[1].y), minf(pts[2].y, pts[3].y)) - pad
+		var max_y := maxf(maxf(pts[0].y, pts[1].y), maxf(pts[2].y, pts[3].y)) + pad
+		var hit := false
+		if click_pos.x >= min_x and click_pos.x <= max_x and click_pos.y >= min_y and click_pos.y <= max_y:
+			hit = true
+		elif _point_in_polygon(click_pos, pts):
+			hit = true
+		
+		if hit:
+			# Create falling leaf
+			var center := Vector2.ZERO
+			for p in pts:
+				center += p
+			center /= float(pts.size())
+			var local_pts := PackedVector2Array()
+			for p in pts:
+				local_pts.append(p - center)
+			var fallen := {
+				"position": center,
+				"target_y": 80.0,  # Ground level (below pot)
+				"fall_velocity": 0.0,
+				"rotation": 0.0,
+				"rotation_speed": randf_range(-1.5, 1.5),
+				"horizontal_drift": randf_range(-12.0, 12.0),
+				"color": leaf_col,
+				"poly_local": local_pts,
+				"time_on_ground": 0.0,
+				"blink_timer": 0.0
+			}
+			fallen_leaves.append(fallen)
+			
+			# Remove leaf from plant
+			leaves.remove_at(i)
+			if leaf["state"] == "brown":
+				wilted_leaves = maxi(0, wilted_leaves - 1)
+			return true
+	
+	return false
+
+func _point_in_polygon(point: Vector2, polygon: PackedVector2Array) -> bool:
+	# Simple ray casting algorithm for point-in-polygon test
+	var inside := false
+	var j := polygon.size() - 1
+	for i in range(polygon.size()):
+		if ((polygon[i].y > point.y) != (polygon[j].y > point.y)) and \
+		   (point.x < (polygon[j].x - polygon[i].x) * (point.y - polygon[i].y) / (polygon[j].y - polygon[i].y) + polygon[i].x):
+			inside = !inside
+		j = i
+	return inside
+
 func _draw() -> void:
 	var stem_height := _ease_out(growth) * max_height
 	var sway := sin(time_accum * 1.3) * 6.0 * growth
@@ -222,19 +496,84 @@ func _draw() -> void:
 			var branch1_attach := base + Vector2(sway * 0.18, -stem_height * 0.32 + 70.0)
 			var branch1_tip := branch1_attach + Vector2(-branch_len * 0.45 * branch1_progress, -branch_len * 0.80 * branch1_progress)
 			draw_line(branch1_attach, branch1_tip, stem_col, branch_width, true)
+			_draw_branch_leaves(branch1_attach, branch1_tip, branch1_progress, 1)
 			if branch1_progress > 0.65:
 				_draw_flower(branch1_tip)
 		if branch2_progress > 0.0:
 			var branch2_attach := base + Vector2(sway * -0.15, -stem_height * 0.48 + 70.0)
 			var branch2_tip := branch2_attach + Vector2(branch_len * 0.50 * branch2_progress, -branch_len * 0.85 * branch2_progress)
 			draw_line(branch2_attach, branch2_tip, stem_col, branch_width, true)
+			_draw_branch_leaves(branch2_attach, branch2_tip, branch2_progress, 2)
 			if branch2_progress > 0.65:
 				_draw_flower(branch2_tip)
 
 	_draw_leaves(base, tip, stem_height)
-	# Primary flower at main tip
-	_draw_flower(tip)
+	# Tip visuals: starter leaves -> bud -> flower
+	_draw_tip_stage(tip, stem_height)
 	_draw_splash(base)
+
+func _draw_branch_leaves(a: Vector2, b: Vector2, progress: float, seed_offset: int) -> void:
+	# Deterministic leaves along branches to mirror the main stem coverage
+	var dir := b - a
+	var len := dir.length()
+	if len <= 2.0:
+		return
+	# Slightly denser when branch is fuller; positions are ordered to avoid "chainsaw" look
+	var n: int = 4 + int(floor(progress * 1.5))
+	var r := RandomNumberGenerator.new()
+	var seed_value: int = int((a.x + a.y + b.x + b.y) * 1000.0) + seed_offset * 971
+	r.seed = seed_value
+	var sag_t: float = clampf(float(wilted_leaves) * 0.05, 0.0, 0.5)
+	var dir_norm := dir.normalized()
+	# Smooth branch direction so leaf normals don't snap with fast sway
+	var norm_key := "norm_%s" % seed_offset
+	var prev_norm: Vector2 = _branch_leaf_normals.get(norm_key, dir_norm)
+	var norm_delta := dir_norm - prev_norm
+	if norm_delta.length() > 0.01:
+		var norm_step := minf(0.08, norm_delta.length() * 0.5)
+		prev_norm += norm_delta.normalized() * norm_step
+	prev_norm = prev_norm.normalized()
+	_branch_leaf_normals[norm_key] = prev_norm
+	var dir_norm_smooth := prev_norm
+	var branch_norm := Vector2(-dir_norm_smooth.y, dir_norm_smooth.x)  # outward normal for perpendicular leaves
+	for i in range(n):
+		var base_t: float = float(i) / float(max(1, n - 1))
+		var t: float = clampf(lerp(0.18, 0.88, base_t) + r.randf_range(-0.02, 0.02), 0.16, 0.90)
+		var desired_p: Vector2 = a + dir * t
+		var key := "%s_%d" % [seed_offset, i]  # stable key so anchors persist as n changes
+		var prev_p: Vector2 = _branch_leaf_anchors.get(key, desired_p)
+		var delta := desired_p - prev_p
+		if delta.length() < 3.0:
+			# Deadzone: ignore tiny branch wiggles
+			pass
+		else:
+			# Respond at half speed, max 1px per frame
+			var step_len := minf(1.0, delta.length() * 0.35)
+			prev_p += delta.normalized() * step_len
+		_branch_leaf_anchors[key] = prev_p
+		var p: Vector2 = prev_p
+		var side := 1.0 if ((i + seed_offset) % 2 == 0) else -1.0
+		var sway_phase: float = r.randf() * TAU
+		var sway: float = sin(time_accum * 0.42 + sway_phase) * 1.1 * progress
+		var base_dir := branch_norm * side * leaf_size.x * 0.90 + dir_norm_smooth * -leaf_size.y * 0.35
+		base_dir = base_dir.rotated(sway * 0.015)
+		var target_down := Vector2(0.0, leaf_size.y * 0.9)
+		var final_dir := base_dir.lerp(target_down, sag_t)
+		var tip_point := p + final_dir
+		var mid := p + final_dir * 0.55
+		var normal := Vector2(-final_dir.y, final_dir.x).normalized() * leaf_size.y * 0.32 * side * -1.0
+		var taper := final_dir.normalized() * leaf_size.y * 0.25
+		var pts := PackedVector2Array([
+			p,
+			p + normal * 0.35 + taper * 0.3,
+			mid + normal * 0.6,
+			tip_point,
+			mid - normal * 0.6,
+			p - normal * 0.35 + taper * 0.3,
+		])
+		var wilt_dark := minf(0.6, float(wilted_leaves) * 0.05)
+		var leaf_col := leaf_color.darkened(wilt_dark)
+		draw_colored_polygon(pts, leaf_col)
 
 func _rose_branch_width(set_index: int) -> float:
 	# Base widths with "couple pixels" thinner per subsequent set, each grows until its own stop threshold.
@@ -328,21 +667,34 @@ func _draw_rose_bush_leaves(a: Vector2, b: Vector2) -> void:
 	var leaf_col := leaf_color.darkened(wilt_dark)
 	var dir := b - a
 	var len: float = maxf(1.0, dir.length())
+	if len <= 0.1:
+		return
+
+	# Deterministic RNG seed per segment for stable randomness
+	var seed_value: int = int((a.x + a.y + b.x + b.y) * 1000.0) & 0x7fffffff
+	var r := RandomNumberGenerator.new()
+	r.seed = seed_value
+
 	var n: int = 4
 	for i in range(n):
-		var t: float = float(i + 1) / float(n + 1)
+		var t: float = r.randf_range(0.2, 0.85)
 		if growth < t * 0.9:
 			continue
 		var p := a + dir * t
-		var side := 1.0 if i % 2 == 0 else -1.0
-		var normal := Vector2(-dir.y, dir.x).normalized() * side
-		var lsize := leaf_size
-		var tip := p + normal * lsize.x * 0.35 + dir.normalized() * lsize.y * 0.25
-		var mid := p + normal * lsize.x * 0.18
+		var side := 1.0 if r.randf() > 0.5 else -1.0
+		var leaf_dir := dir.normalized() * leaf_size.y * 0.6 * (0.8 + 0.4 * r.randf())
+		leaf_dir = leaf_dir.rotated(deg_to_rad(6.0 * side))
+		var leaf_normal := Vector2(-leaf_dir.y, leaf_dir.x).normalized() * leaf_size.y * 0.35 * side * -1.0
+		var taper := leaf_dir.normalized() * leaf_size.y * 0.25
+		var tip_point := p + leaf_dir
+		var mid := p + leaf_dir * 0.55
 		var pts := PackedVector2Array([
 			p,
-			mid,
-			tip,
+			p + leaf_normal * 0.35 + taper * 0.3,
+			mid + leaf_normal * 0.6,
+			tip_point,
+			mid - leaf_normal * 0.6,
+			p - leaf_normal * 0.35 + taper * 0.3,
 		])
 		draw_colored_polygon(pts, leaf_col)
 
@@ -390,28 +742,108 @@ func _draw_poops(base: Vector2) -> void:
 func _draw_leaves(base: Vector2, tip: Vector2, stem_height: float) -> void:
 	if leaf_count <= 0:
 		return
-	var steps: int = max(1, leaf_count)
-	var wilt_dark := minf(0.6, float(wilted_leaves) * 0.07)
-	var leaf_col := leaf_color.darkened(wilt_dark)
-	for i in range(steps):
-		var t := float(i + 1) / float(steps + 1)
-		if growth < t * 0.8:
-			continue
-		var y := -stem_height * t
-		var side := 1.0 if i % 2 == 0 else -1.0
+	
+	# Draw each individual leaf
+	for leaf in leaves:
+		var y: float = -stem_height * float(leaf["t"])
 		var attach := Vector2(0.0, y)
-		var sway := sin(time_accum * 1.8 + float(i)) * 4.0 * growth
-		var dir := Vector2(side * leaf_size.x, -leaf_size.y * 0.35).rotated(deg_to_rad(8.0 * side) + sway * 0.02)
+		var sway: float = sin(time_accum * 1.8 + float(leaf["index"]) + float(leaf["sway_offset"])) * 4.0 * growth
+		
+		# Base direction
+		var base_angle: float = deg_to_rad(8.0 * float(leaf["side"])) + sway * 0.02
+		var dir := Vector2(float(leaf["side"]) * leaf_size.x, -leaf_size.y * 0.35).rotated(base_angle)
+		# Sag toward downward vector based on progress
+		var target_down := Vector2(0.0, leaf_size.y * 0.9)
+		var sag_t: float = clampf(float(leaf.get("sag_progress", 0.0)), 0.0, 1.0)
+		dir = dir.lerp(target_down, sag_t)
 		var tip_point := attach + dir
-		var mid := attach + dir * 0.5 + Vector2(0.0, -leaf_size.y * 0.35)
-		var spread := Vector2(dir.x * 0.25, leaf_size.y * 0.8 * side)
+		var mid := attach + dir * 0.55
+		var normal := Vector2(-dir.y, dir.x).normalized() * leaf_size.y * 0.35 * float(leaf["side"]) * -1.0
+		var taper := dir.normalized() * leaf_size.y * 0.25
+		# Six-point tapered leaf shape for a more natural silhouette
 		var pts := PackedVector2Array([
 			attach,
-			mid + spread * -1.0,
+			attach + normal * 0.35 + taper * 0.3,
+			mid + normal * 0.6,
 			tip_point,
-			mid + spread,
+			mid - normal * 0.6,
+			attach - normal * 0.35 + taper * 0.3,
 		])
+		
+		# Color based on state
+		var leaf_col: Color
+		match leaf["state"]:
+			"healthy":
+				leaf_col = leaf_color
+			"wilting":
+				leaf_col = leaf_color.darkened(0.3)  # Dark green
+			"brown":
+				leaf_col = Color(0.35, 0.25, 0.15)  # Brown
+		
 		draw_colored_polygon(pts, leaf_col)
+	
+	# Draw fallen leaves on ground
+	for fallen in fallen_leaves:
+		var alpha: float = 1.0
+		if fallen["time_on_ground"] > 3.0:
+			alpha = 0.5 + 0.5 * sin(fallen["blink_timer"] * 8.0)
+		var leaf_col := Color(fallen["color"].r, fallen["color"].g, fallen["color"].b, alpha)
+		if fallen.has("poly_local"):
+			var center: Vector2 = fallen["position"]
+			var rot: float = float(fallen["rotation"])
+			var pts := PackedVector2Array()
+			for p in fallen["poly_local"]:
+				pts.append(center + (p as Vector2).rotated(rot))
+			draw_colored_polygon(pts, leaf_col)
+		else:
+			# Legacy fallback rectangle
+			var size: Vector2 = fallen.get("size", leaf_size)
+			var center: Vector2 = fallen["position"]
+			var rot: float = float(fallen["rotation"])
+			var half_x: float = size.x * 0.5
+			var half_y: float = size.y * 0.5
+			var pts := PackedVector2Array([
+				center + Vector2(-half_x, -half_y).rotated(rot),
+				center + Vector2(half_x, -half_y).rotated(rot),
+				center + Vector2(half_x, half_y).rotated(rot),
+				center + Vector2(-half_x, half_y).rotated(rot)
+			])
+			draw_colored_polygon(pts, leaf_col)
+
+func _draw_tip_stage(tip: Vector2, stem_height: float) -> void:
+	var g := growth
+	if _starter_leaves_active and g < 0.05:
+		_draw_starter_leaves(tip)
+		return
+	if g < 0.9:
+		_draw_green_bud(tip)
+		return
+	# Bloom
+	_draw_flower(tip)
+
+func _draw_starter_leaves(tip: Vector2) -> void:
+	for side in [-1.0, 1.0]:
+		var dir: Vector2 = Vector2(side * leaf_size.x * 0.9, -leaf_size.y * 0.4)
+		var attach: Vector2 = tip + dir * 0.1
+		var tip_point: Vector2 = attach + dir
+		var mid: Vector2 = attach + dir * 0.55
+		var normal: Vector2 = Vector2(-dir.y, dir.x).normalized() * leaf_size.y * 0.35 * side * -1.0
+		var taper: Vector2 = dir.normalized() * leaf_size.y * 0.25
+		var pts := PackedVector2Array([
+			attach,
+			attach + normal * 0.35 + taper * 0.3,
+			mid + normal * 0.6,
+			tip_point,
+			mid - normal * 0.6,
+			attach - normal * 0.35 + taper * 0.3,
+		])
+		draw_colored_polygon(pts, leaf_color)
+
+func _draw_green_bud(tip: Vector2) -> void:
+	var r := bud_radius * 0.65
+	var c := Color(0.28, 0.55, 0.32)
+	draw_circle(tip, r, c)
+	draw_circle(tip + Vector2(0.0, -r * 0.2), r * 0.55, c.lightened(0.1))
 
 func _draw_pot(base: Vector2) -> void:
 	# Pot sizes scale with pot level
